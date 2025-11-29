@@ -9,7 +9,8 @@
         WIFI_RECONNECT,
 
         //telegram bot events
-        MESSAGE_SEND
+        MESSAGE_SEND_SKIP,
+        MESSAGE_SEND,
     };
 
 #endif

@@ -26,7 +26,7 @@ void WiFiManager::connect() {
     subnet.fromString(this->subnet);
 
     WiFi.mode(WIFI_STA);
-    WiFi.config(ip, gateway, subnet);
+    WiFi.config(ip, gateway, subnet, gateway);
     WiFi.begin(ssid, password);
 
     EventNotifier& eventNotifier = EventNotifier::getInstance();

@@ -12,6 +12,7 @@ void SerialObserver::update(EventType eventType, const String& message) {
 
         //telegram bot events
         case EventType::MESSAGE_SEND: text = "Message send"; break;
+        case EventType::MESSAGE_SEND_SKIP: text = message; break;
     }
 
     Serial.println(text);

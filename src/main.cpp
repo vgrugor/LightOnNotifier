@@ -28,6 +28,7 @@ void setup() {
 
     wifiManager.connect();
 
+    telegramNotifier.init();
 	telegramNotifier.sendMessage(LIGHT_ON_MESSAGE);
 
     OTA.begin();
