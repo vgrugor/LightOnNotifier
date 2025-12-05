@@ -13,8 +13,9 @@
     extern const char* WIFI_GATEWAY;
     extern const char* WIFI_SUBNET;
 
-    extern const int BOARD_LED;
-    extern const int EXTERNAL_LED;
+    extern const int BOARD_LED_PIN;
+    extern const int EXTERNAL_LED_PIN;
+    extern const int BUZZER_PIN;
 
     extern const char* BOT_TOKEN;
     extern const char* CHAT_IDS[];

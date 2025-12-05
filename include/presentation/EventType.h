@@ -8,6 +8,9 @@
         WIFI_CONNECTED,
         WIFI_RECONNECT,
 
+        //light events
+        LIGHT_ON,
+
         //telegram bot events
         MESSAGE_SEND_SKIP,
         MESSAGE_SEND,
