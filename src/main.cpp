@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include "infrastructure/env.h"
 #include "infrastructure/wifi/WiFiManager.h"
-#include "infrastructure/actuators/InternalLedActuator.h"
+#include "infrastructure/actuators/ExternalLedActuator.h"
 #include "presentation/observers/LedObserver.h"
 #include "presentation/observers/SerialObserver.h"
 #include "infrastructure/loaders/OTALoader.h"
@@ -9,14 +9,14 @@
 
 WiFiManager wifiManager(WIFI_SSID, WIFI_PASSWORD, WIFI_IP, WIFI_GATEWAY, WIFI_SUBNET);
 
-InternalLedActuator internalLedActuator(BOARD_LED);
+ExternalLedActuator externalLedActuator(EXTERNAL_LED);
 
-LedObserver ledObserver(internalLedActuator);
+LedObserver ledObserver(externalLedActuator);
 SerialObserver serialObserver;
 
 EventNotifier& eventNotifier = EventNotifier::getInstance();
 
-TelegramNotifier telegramNotifier(BOT_TOKEN, CHAT_ID);
+TelegramNotifier telegramNotifier(BOT_TOKEN, CHAT_IDS, CHAT_IDS_COUNT);
 
 OTALoader OTA(OTA_HOSTNAME, OTA_PASSWORD);
 

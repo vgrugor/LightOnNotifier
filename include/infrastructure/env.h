@@ -14,9 +14,11 @@
     extern const char* WIFI_SUBNET;
 
     extern const int BOARD_LED;
+    extern const int EXTERNAL_LED;
 
     extern const char* BOT_TOKEN;
-    extern const char* CHAT_ID;
+    extern const char* CHAT_IDS[];
+    extern const size_t CHAT_IDS_COUNT;
 
     extern const char* LIGHT_ON_MESSAGE;
 

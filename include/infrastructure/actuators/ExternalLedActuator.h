@@ -4,12 +4,12 @@
     #include "domain/Actuator.h"
     #include <Arduino.h>
 
-    class InternalLedActuator : public Actuator {
+    class ExternalLedActuator : public Actuator {
         private:
             int pin;
 
         public:
-            InternalLedActuator(int pin);
+            ExternalLedActuator(int pin);
             void setState(bool state) override;
             void update() override;
     };
