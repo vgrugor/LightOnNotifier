@@ -29,6 +29,7 @@ void setup() {
 
     eventNotifier.addObserver(&ledObserver);
     eventNotifier.addObserver(&serialObserver);
+    eventNotifier.addObserver(&buzzerObserver);
 
     EventNotifier::getInstance().notifyObservers(EventType::LIGHT_ON);
 
