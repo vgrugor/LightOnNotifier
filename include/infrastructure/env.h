@@ -16,6 +16,7 @@
     extern const int BOARD_LED_PIN;
     extern const int EXTERNAL_LED_PIN;
     extern const int BUZZER_PIN;
+    extern const int BUTTON_PIN;
 
     extern const char* BOT_TOKEN;
     extern const char* CHAT_IDS[];

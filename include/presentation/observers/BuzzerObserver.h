@@ -1,15 +1,17 @@
 #ifndef BUZZER_OBSERVER_H
-    #define BUZZER_OBSERVER_H
+   #define BUZZER_OBSERVER_H
 
-    #include <Arduino.h>
-    #include "Observer.h"
-    #include "presentation/EventType.h"
-    #include "infrastructure/actuators/BuzzerActuator.h"
-    #include "infrastructure/env.h"
+   #include <Arduino.h>
+   #include "Observer.h"
+   #include "presentation/EventType.h"
+   #include "infrastructure/actuators/BuzzerActuator.h"
+   #include "infrastructure/env.h"
 
     class BuzzerObserver : public Observer {
         private:
             BuzzerActuator buzzerActuator;
+            void playLongSignalWithCancel(unsigned long durationMs);
+            bool isStopRequested() const;
 
         public:
             BuzzerObserver(BuzzerActuator buzzerActuator);
