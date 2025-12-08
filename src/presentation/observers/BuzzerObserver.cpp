@@ -11,7 +11,7 @@ void BuzzerObserver::update(EventType eventType, const String& message) {
         case EventType::WIFI_RECONNECT: break;
 
         //light events
-        case EventType::LIGHT_ON: this->playLongSignalWithCancel(15000); break;
+        case EventType::LIGHT_ON: this->playLongSignalWithCancel(10000); break;
     }
 }
 
