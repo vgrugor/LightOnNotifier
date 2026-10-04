@@ -1,19 +1,17 @@
-#ifndef OTA_LOADER_H
-    #define OTA_LOADER_H
+#ifndef LIGHTONNOTIFIER_INFRASTRUCTURE_LOADERS_OTALOADER_H
+#define LIGHTONNOTIFIER_INFRASTRUCTURE_LOADERS_OTALOADER_H
 
-    #include <ArduinoOTA.h>
-    #include <ESP8266WiFi.h>
+#include "application/Ports.h"
 
-    class OTALoader {
-        public:
-            OTALoader(const char* hostname, const char* password = nullptr);
-            void begin();
-            void handle();
-            void setPassword(const char* password);
+class OTALoader : public OtaPort {
+public:
+    OTALoader(const char* hostname, const char* password = nullptr)
+        : hostname(hostname), password(password) {}
+    void begin() override;
+    void handle() override;
 
-        private:
-            const char* hostname;
-            const char* password;
-    };
-
+private:
+    const char* hostname;
+    const char* password;
+};
 #endif

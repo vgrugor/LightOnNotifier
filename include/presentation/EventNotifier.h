@@ -1,23 +1,21 @@
-#ifndef EVENTNOTIFIER_H
-    #define EVENTNOTIFIER_H
+#ifndef LIGHTONNOTIFIER_PRESENTATION_EVENTNOTIFIER_H
+#define LIGHTONNOTIFIER_PRESENTATION_EVENTNOTIFIER_H
 
-    #include <vector>
-    #include <algorithm>
-    #include "presentation/observers/Observer.h"
-    #include "presentation/EventType.h"
+#include <stddef.h>
 
-    class EventNotifier {
-        private:
-            std::vector<Observer*> observers;
-            EventNotifier();
-            EventNotifier(const EventNotifier&) = delete;
-            EventNotifier& operator=(const EventNotifier&) = delete;
+#include "domain/Event.h"
 
-        public:
-            static EventNotifier& getInstance();
-            void addObserver(Observer* observer);
-            void removeObserver(Observer* observer);
-            void notifyObservers(EventType eventType, const String& message = "");
-    };
+// Observers are borrowed, must outlive dispatcher. Mutations and nested dispatch are rejected.
+class EventNotifier : public EventSink {
+public:
+    static constexpr size_t MAX_OBSERVERS = 4;
+    bool addObserver(Observer* observer);
+    bool removeObserver(Observer* observer);
+    void publish(const Event& event) override;
 
-#endif // EVENTNOTIFIER_H
+private:
+    Observer* observers[MAX_OBSERVERS] = {};
+    size_t count = 0;
+    bool dispatching = false;
+};
+#endif

@@ -1,13 +1,11 @@
 #include "infrastructure/actuators/BuzzerActuator.h"
 
-BuzzerActuator::BuzzerActuator(int pin) : pin(pin) {
+#include <Arduino.h>
+
+void BuzzerActuator::begin() {
+    digitalWrite(pin, LOW);
     pinMode(pin, OUTPUT);
 }
-
 void BuzzerActuator::setState(bool state) {
     digitalWrite(pin, state ? HIGH : LOW);
-}
-
-void BuzzerActuator::update() {
-    // Обновление состояния актуатора (если требуется)
 }
