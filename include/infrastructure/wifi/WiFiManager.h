@@ -1,23 +1,22 @@
-#ifndef WIFI_MANAGER_H
-#define WIFI_MANAGER_H
+#ifndef LIGHTONNOTIFIER_INFRASTRUCTURE_WIFI_WIFIMANAGER_H
+#define LIGHTONNOTIFIER_INFRASTRUCTURE_WIFI_WIFIMANAGER_H
 
-#include <ESP8266WiFi.h>
-#include "presentation/EventNotifier.h"
+#include "application/Ports.h"
 
-class WiFiManager {
-    private:
-        const char* ssid;
-        const char* password;
-        const char* ip;
-        const char* gateway;
-        const char* subnet;
+class WiFiManager : public ConnectionPort {
+public:
+    WiFiManager(const char* ssid, const char* password, const char* ip, const char* gateway,
+                const char* subnet);
+    bool configure() override;
+    void startAttempt() override;
+    void stopAttempt() override;
+    bool isConnected() const override;
 
-    public:
-        WiFiManager(const char* ssid, const char* password, const char* ip, const char* gateway, const char* subnet);
-        void connect();
-        void reconnect();
-        bool isConnected();
-        String getIPAddress();
+private:
+    const char* ssid;
+    const char* password;
+    const char* ip;
+    const char* gateway;
+    const char* subnet;
 };
-
-#endif // WIFI_MANAGER_H
+#endif

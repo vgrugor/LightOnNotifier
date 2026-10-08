@@ -1,11 +1,9 @@
-#ifndef ACTUATOR_H
-    #define ACTUATOR_H
+#ifndef LIGHTONNOTIFIER_DOMAIN_ACTUATOR_H
+#define LIGHTONNOTIFIER_DOMAIN_ACTUATOR_H
 
-    #include "domain/Device.h"
-
-    class Actuator : public Device {
-        public:
-            virtual void setState(bool state) = 0;
-    };
-
-#endif // ACTUATOR_H
+class Actuator {
+public:
+    virtual ~Actuator() = default;
+    virtual void setState(bool state) = 0;
+};
+#endif

@@ -1,48 +1,46 @@
 #include <Arduino.h>
+
+#include "application/NotifierApplication.h"
+#include "infrastructure/GpioSignals.h"
 #include "infrastructure/env.h"
-#include "infrastructure/wifi/WiFiManager.h"
-#include "infrastructure/actuators/ExternalLedActuator.h"
-#include "infrastructure/actuators/BuzzerActuator.h"
-#include "presentation/observers/LedObserver.h"
-#include "presentation/observers/SerialObserver.h"
-#include "presentation/observers/BuzzerObserver.h"
 #include "infrastructure/loaders/OTALoader.h"
-#include "presentation/TelegramNotifier.h"
+#include "infrastructure/telegram/TelegramTransport.h"
+#include "infrastructure/time/NetworkTime.h"
+#include "infrastructure/wifi/WiFiManager.h"
+#include "presentation/EventNotifier.h"
+#include "presentation/observers/SerialObserver.h"
 
-WiFiManager wifiManager(WIFI_SSID, WIFI_PASSWORD, WIFI_IP, WIFI_GATEWAY, WIFI_SUBNET);
-
-ExternalLedActuator externalLedActuator(EXTERNAL_LED_PIN);
-BuzzerActuator buzzerActuator(BUZZER_PIN);
-
-LedObserver ledObserver(externalLedActuator);
-SerialObserver serialObserver;
-BuzzerObserver buzzerObserver(buzzerActuator);
-
-EventNotifier& eventNotifier = EventNotifier::getInstance();
-
-TelegramNotifier telegramNotifier(BOT_TOKEN, CHAT_IDS, CHAT_IDS_COUNT);
-
-OTALoader OTA(OTA_HOSTNAME, OTA_PASSWORD);
+namespace {
+// All callback targets and borrowed configuration have static lifetime.
+EventNotifier events;
+ExternalLedActuator led(EXTERNAL_LED_PIN);
+BuzzerActuator buzzer(BUZZER_PIN);
+GpioSignals outputs(led, buzzer);
+GpioButton button(BUTTON_PIN);
+ArduinoClock monotonicClock;
+SignalController signals(outputs, button);
+SerialObserver serial;
+WiFiManager wifi(WIFI_SSID, WIFI_PASSWORD, WIFI_IP, WIFI_GATEWAY, WIFI_SUBNET);
+ConnectionService connection(wifi, events);
+NetworkTime networkTime;
+TimeService timeService(networkTime, events);
+TelegramTransport telegram(BOT_TOKEN);
+NotificationService notifications(telegram, events, monotonicClock);
+OTALoader ota(OTA_HOSTNAME, OTA_PASSWORD);
+NotifierApplication application(connection, timeService, notifications, signals, ota, events);
+} // namespace
 
 void setup() {
     Serial.begin(115200);
-
-    eventNotifier.addObserver(&ledObserver);
-    eventNotifier.addObserver(&serialObserver);
-    eventNotifier.addObserver(&buzzerObserver);
-
-    EventNotifier::getInstance().notifyObservers(EventType::LIGHT_ON);
-
-    wifiManager.connect();
-
-    telegramNotifier.init();
-	telegramNotifier.sendMessage(LIGHT_ON_MESSAGE);
-
-    OTA.begin();
+    outputs.begin();
+    button.begin();
+    events.addObserver(&signals);
+    events.addObserver(&serial);
+    telegram.begin();
+    application.begin(monotonicClock.now(), LIGHT_ON_MESSAGE, CHAT_IDS, CHAT_IDS_COUNT);
 }
 
 void loop() {
-	wifiManager.reconnect();
-
-    OTA.handle();
+    application.update(monotonicClock.now());
+    yield();
 }

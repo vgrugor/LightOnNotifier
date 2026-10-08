@@ -1,13 +1,11 @@
 #include "infrastructure/actuators/ExternalLedActuator.h"
 
-ExternalLedActuator::ExternalLedActuator(int pin) : pin(pin) {
+#include <Arduino.h>
+
+void ExternalLedActuator::begin() {
+    digitalWrite(pin, LOW);
     pinMode(pin, OUTPUT);
 }
-
 void ExternalLedActuator::setState(bool state) {
     digitalWrite(pin, state ? HIGH : LOW);
-}
-
-void ExternalLedActuator::update() {
-    // Обновление состояния актуатора (если требуется)
 }

@@ -1,57 +1,33 @@
 #include "infrastructure/wifi/WiFiManager.h"
-#include <Arduino.h>
 
-WiFiManager::WiFiManager(
-    const char* ssid, 
-    const char* password, 
-    const char* ip, 
-    const char* gateway, 
-    const char* subnet
-) : 
-    ssid(ssid), 
-    password(password), 
-    ip(ip), 
-    gateway(gateway), 
-    subnet(subnet) 
-{
+#include <ESP8266WiFi.h>
+
+#include "application/StaticNetworkConfig.h"
+
+WiFiManager::WiFiManager(const char* ssid, const char* password, const char* ip,
+                         const char* gateway, const char* subnet)
+    : ssid(ssid), password(password), ip(ip), gateway(gateway), subnet(subnet) {}
+
+bool WiFiManager::configure() {
+    StaticNetworkConfig parsed;
+    if (ssid == nullptr || ssid[0] == '\0' || password == nullptr ||
+        !parseStaticNetwork(ip, gateway, subnet, parsed)) {
+        return false;
+    }
+    const IPAddress address(parsed.address);
+    const IPAddress route(parsed.gateway);
+    const IPAddress mask(parsed.subnet);
+    WiFi.persistent(false);
+    WiFi.setAutoReconnect(false);
+    return WiFi.mode(WIFI_STA) && WiFi.config(address, route, mask, route);
 }
 
-void WiFiManager::connect() {
-    IPAddress ip;
-    IPAddress gateway;
-    IPAddress subnet;
-
-    ip.fromString(this->ip);
-    gateway.fromString(this->gateway);
-    subnet.fromString(this->subnet);
-
-    WiFi.mode(WIFI_STA);
-    WiFi.config(ip, gateway, subnet, gateway);
+void WiFiManager::startAttempt() {
     WiFi.begin(ssid, password);
-
-    EventNotifier& eventNotifier = EventNotifier::getInstance();
-
-    eventNotifier.notifyObservers(EventType::WIFI_START_CONNECT);
-
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(1000);
-        eventNotifier.notifyObservers(EventType::WIFI_TRY_CONNECT);
-    }
-
-    eventNotifier.notifyObservers(EventType::WIFI_CONNECTED);
 }
-
-void WiFiManager::reconnect() {
-    if (!isConnected()) {
-        EventNotifier::getInstance().notifyObservers(EventType::WIFI_RECONNECT);
-        connect();
-    }
+void WiFiManager::stopAttempt() {
+    WiFi.disconnect();
 }
-
-bool WiFiManager::isConnected() {
+bool WiFiManager::isConnected() const {
     return WiFi.status() == WL_CONNECTED;
-}
-
-String WiFiManager::getIPAddress() {
-    return WiFi.localIP().toString();
 }
