@@ -15,6 +15,12 @@ void ConnectionService::begin(uint32_t now) {
     start(now);
 }
 
+void ConnectionService::reconfigure(uint32_t now) {
+    connection.stopAttempt();
+    currentState = State::IDLE;
+    begin(now);
+}
+
 void ConnectionService::start(uint32_t now) {
     stateStarted = now;
     progressStarted = now;

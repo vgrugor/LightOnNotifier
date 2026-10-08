@@ -18,6 +18,7 @@ public:
     static constexpr uint32_t SEND_GAP_MS = 200;
     NotificationService(MessageSender& sender, EventSink& events, MonotonicClock& clock)
         : sender(sender), events(events), clock(clock) {}
+    static bool validate(const char* message, const char* const* recipients, size_t count);
     // One startup batch per instance. Copies text/IDs into bounded storage; empty lists are
     // invalid.
     bool enqueue(const char* message, const char* const* recipients, size_t count);
@@ -25,6 +26,9 @@ public:
     Outcome outcome() const;
     Outcome recipientOutcome(size_t index) const;
     uint8_t attempts(size_t index) const;
+    size_t recipientCount() const {
+        return count;
+    }
 
 private:
     struct Recipient {

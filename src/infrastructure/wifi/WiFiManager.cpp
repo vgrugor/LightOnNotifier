@@ -19,7 +19,8 @@ bool WiFiManager::configure() {
     const IPAddress mask(parsed.subnet);
     WiFi.persistent(false);
     WiFi.setAutoReconnect(false);
-    return WiFi.mode(WIFI_STA) && WiFi.config(address, route, mask, route);
+    const WiFiMode_t mode = (WiFi.getMode() & WIFI_AP) != 0 ? WIFI_AP_STA : WIFI_STA;
+    return WiFi.mode(mode) && WiFi.config(address, route, mask, route);
 }
 
 void WiFiManager::startAttempt() {

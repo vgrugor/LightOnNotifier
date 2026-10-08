@@ -11,6 +11,9 @@ separate light sensor.
 - A startup notification retained in RAM until Wi-Fi and valid TLS calendar time are available.
 - Independent delivery and retries for multiple Telegram recipients.
 - Timed LED and buzzer indications; an active-low button cancels the current buzzer signal.
+- A mobile-friendly Ukrainian local web interface for Wi-Fi, Telegram, sound, and LED settings.
+- Versioned configuration in LittleFS with two alternating records and Wi-Fi change rollback.
+- Password-protected setup/recovery access point and authenticated device status.
 - Serial diagnostics and ArduinoOTA firmware updates over the local network.
 - Deterministic host tests for application behavior and CI builds using placeholders.
 
@@ -25,23 +28,26 @@ clang-format 18.1.8. CI uses Python 3.12. Firmware preserves Arduino's GNU C++17
 native tests use C++17. `platformio.ini` pins espressif8266 4.2.1 (Arduino core 3.1.2),
 native 1.2.1, and immutable Git revisions of Universal Arduino Telegram Bot and ArduinoJson
 7.4.2. Native tests pin Unity 2.6.1 and use the same ArduinoJson revision for response
-acknowledgment tests. ArduinoOTA comes from the ESP8266 Arduino framework. Host tests
-also require a working native C++ compiler.
+acknowledgment tests. ArduinoOTA, ESP8266WebServer, and LittleFS come from the pinned ESP8266
+Arduino framework. Host tests also require a working native C++ compiler. Browser tests use
+Node.js 22, pnpm 11.25.0, Playwright 1.62.1, and Chromium or a local Chrome installation.
 
 ## Repository structure
 
 | Path | Purpose |
 | --- | --- |
 | `include/domain/` | Neutral event and state contracts. |
-| `include/application/`, `src/application/` | Static network validation, connection, time, delivery, and signals. |
-| `include/infrastructure/`, `src/infrastructure/` | ESP8266, GPIO, TLS/Telegram, configuration, and OTA adapters. |
+| `include/application/`, `src/application/` | Static network and settings validation, connection, time, delivery, and signals. |
+| `include/infrastructure/`, `src/infrastructure/` | ESP8266, GPIO, TLS/Telegram, LittleFS, web, configuration, and OTA adapters. |
 | `include/presentation/`, `src/presentation/` | Event dispatch and serial formatting. |
 | `src/main.cpp` | Hardware initialization, dependency wiring, and lifecycle coordination. |
 | `test/` | Native behavior tests using fake adapters and deterministic time. |
+| `tests/browser.cjs` | Browser checks against a local mock controller. |
 | `scripts/` | Formatting checks and placeholder configuration generation for CI. |
 
 Application and domain code do not include Arduino or transport libraries. Hardware
-and service adapters implement their contracts. The device has no filesystem assets.
+and service adapters implement their contracts. HTML, CSS, and JavaScript are embedded in the
+firmware; LittleFS stores configuration only. No separate filesystem image is deployed.
 
 ## Initial setup
 
@@ -57,8 +63,18 @@ fi
 ```
 
 Copy the example only when the local file does not already exist. Edit the ignored
-`src/infrastructure/env.cpp` with your deployment settings. A clean checkout can
-also compile the CI environment without creating or accessing a local credential file.
+`src/infrastructure/env.cpp` with your deployment settings. Add a unique `SETUP_PASSWORD` to
+an older local configuration file; do not print or commit it. Record the per-device setup
+password in a secure place before installing the device. The example password is rejected
+by the firmware. A clean checkout can compile the CI environment without a local credential
+file. The CI fixture intentionally cannot open a usable setup access point.
+
+For browser tests, install Node.js 22, enable Corepack, and select the pinned pnpm version:
+
+```sh
+corepack enable
+corepack prepare pnpm@11.25.0 --activate
+```
 
 ## Configuration and secrets
 
@@ -71,6 +87,7 @@ also compile the CI environment without creating or accessing a local credential
 | `WIFI_SSID`, `WIFI_PASSWORD` | Access point credentials. |
 | `WIFI_IP`, `WIFI_GATEWAY`, `WIFI_SUBNET` | Valid IPv4 static address, gateway, and subnet. |
 | `OTA_HOSTNAME`, `OTA_PASSWORD` | Local OTA hostname and update authentication. |
+| `SETUP_PASSWORD` | Unique 12–63-byte printable ASCII initial and recovery secret for this device; also protects its setup access point. |
 | `EXTERNAL_LED_PIN`, `BUZZER_PIN`, `BUTTON_PIN` | Local peripheral pin assignments. |
 | `BOARD_LED_PIN` | Compatibility setting; the board LED is currently unused. |
 | `BOT_TOKEN` | Telegram bot token. |
@@ -81,6 +98,19 @@ Invalid notification configuration prevents delivery. Invalid static addressing 
 be corrected before Wi-Fi can connect; the device does not silently switch to DHCP.
 CI generates a separate placeholder translation unit under `.pio` and excludes the
 local `env.cpp` from its firmware sources.
+
+On first boot after upgrading, valid build-time Wi-Fi and Telegram values initialize the
+saved configuration once. Later web edits use LittleFS. A small EEPROM marker records that
+the device was provisioned so a damaged filesystem does not reimport compiled credentials.
+A deliberate web reset clears the saved configuration and does not reimport build-time credentials.
+If no usable configuration
+exists, the device opens a protected setup access point named `LightOn-XXXXXX` with address
+`192.168.4.1`; the suffix comes from the ESP8266 chip ID. Connect using `SETUP_PASSWORD`,
+open `http://192.168.4.1/`, and sign in with the same password. Save Telegram settings, then
+apply Wi-Fi settings. Open the proposed station IP address from that network and confirm it
+within 120 seconds. Set an administrator password of 12–64 bytes in the Device section.
+Unconfirmed network settings revert automatically. If the stored configuration is unreadable,
+the device enters protected setup rather than silently importing compiled credentials.
 
 Chat identifiers accept canonical nonzero decimal IDs with an optional leading minus,
 without leading zeros, or public channel usernames beginning with `@`. Usernames contain
@@ -101,14 +131,20 @@ python scripts/check_format.py
 pio test -e native
 pio run -e nodemcuv2_ci
 pio run -e nodemcuv2
+pnpm install --frozen-lockfile
+pnpm exec playwright install chromium
+pnpm test:e2e
 ```
 
 `nodemcuv2_ci` builds without production credentials. `nodemcuv2` uses the ignored
 local configuration. Native tests compile actual application modules, event dispatch,
-HTTP response framing, and Telegram acknowledgment parsing. They use no network or
+HTTP response framing, Telegram acknowledgment parsing, and settings storage with fake
+LittleFS/EEPROM adapters. They use no network or
 physical board and cover input validation, timing boundaries, and counter wraparound.
 To apply the pinned formatter, run `python scripts/check_format.py --fix`; it excludes
-the local credential file. CI runs the first three commands on pushes and pull requests.
+the local credential file. On a Mac with Chrome already installed, set `PW_CHANNEL=chrome`
+for `pnpm test:e2e` instead of installing Chromium. CI runs formatting, host tests, the
+placeholder firmware build, and browser checks on pushes and pull requests.
 
 ## Interfaces
 
@@ -125,7 +161,7 @@ fail the attempt. The request uses HTTP/1.0; chunked responses are not supported
 
 Serial output uses 115200 baud. Events report connection progress, delivery outcomes,
 and configuration errors without printing bot tokens, passwords, or recipient IDs.
-There is no HTTP API, MQTT interface, inbound bot command processing, or persistent queue.
+There is no MQTT interface, inbound bot command processing, or persistent notification queue.
 
 Examples are `WiFi connected`, `Waiting for network time`, and
 `Message sent; recipient index=0; attempt=1`. Recipient indices are zero-based; attempts
@@ -137,6 +173,39 @@ including after reconnection. It does not wait for NTP or Telegram delivery. A n
 empty `OTA_PASSWORD` leaves OTA unauthenticated. Configure a strong password and use a
 trusted LAN; do not expose the update port to the internet. No firmware upload or live
 Telegram send is part of ordinary local tests or CI.
+
+The embedded web page is available at `http://<device-ip>/` on the local network. Open it
+from a phone or computer on the same network. Pages are in Ukrainian and work without an
+internet connection. The five sections are Status, Sound and LED, Wi-Fi, Telegram, and Device.
+The page stores nothing merely because it was opened. Save actions write changed settings;
+network settings require confirmation from the candidate station IP address. The physical
+button cancels sound on a short press and opens the protected setup access point after a
+five-second hold following boot. Recovery access closes after ten minutes unless a Wi-Fi
+change is being confirmed.
+
+The HTTP API uses JSON responses and form-encoded POST bodies. `POST /api/login` accepts a
+`password` and establishes a 30-minute session cookie; it returns a CSRF token. Authenticated
+GET routes are `/api/session`, `/api/status`, and `/api/settings`. Authenticated POST routes are
+`/api/signals`, `/api/telegram`, `/api/wifi`, `/api/wifi/confirm`, `/api/password`,
+`/api/preview`, `/api/test`, `/api/reset`, and `/api/restart`. Mutations require the session
+cookie, matching `Origin` and `X-CSRF` header, and a form body no larger than 2048 bytes.
+Settings mutations include the current numeric `revision`; stale revisions return HTTP 409.
+Errors return JSON with an `error` string, usually with HTTP 400, 401, 403, 409, 413, 415, or
+500. Neither status nor settings responses return saved passwords or bot tokens.
+
+`/api/status` reports `wifi`, `ip`, `uptimeMs`, `firmware`, `timeReady`, `delivery`,
+`ledActive`, `buzzerActive`, `wifiPending`, `recovery`, `storageReady`, `unsupportedSchema`,
+`configured`, numbered
+`recipients` with `outcome` and `attempts`, and per-recipient test results. Delivery is one of
+`empty`, `invalid`, `waiting`, `partial`, `delivered`, or `exhausted`. A test send is an explicit
+action available only after the startup event is terminal and Wi-Fi/time are ready; it makes
+one attempt per selected recipient. A failed response can still follow an accepted message,
+so manual repetition may produce a duplicate. Sound previews and LED previews do not send
+Telegram messages.
+
+Web authentication protects local access but HTTP does not encrypt browser traffic or
+submitted secrets. Use a trusted LAN; do not expose the web port to the internet. ArduinoOTA
+uses its separate configured password and does not wait for NTP or Telegram delivery.
 
 ## Hardware connections
 
@@ -151,11 +220,14 @@ GPIO0 is a boot-strapping pin: holding the D3 button low while powering up or re
 enters the ESP8266 serial bootloader. Verify the circuit against your board and peripheral
 ratings before deployment. GPIO configuration occurs explicitly during startup.
 
-The startup buzzer lasts ten seconds and takes priority over Wi-Fi patterns. A connection
+When enabled, the startup buzzer lasts nominally ten seconds and takes priority over Wi-Fi
+patterns. A connection
 attempt progress event requests 100 ms off, 100 ms on, then 100 ms off, once per second.
 Successful connection gives 500 ms off, 500 ms on, 1000 ms off, 500 ms on, then 500 ms off.
-The external LED is high while connecting and low when connected. Successful delivery
-requests 1000 ms low, then 500 ms high, ending high. A button press
+The external LED defaults to steady on during startup and connection, off while waiting for
+delivery, and steady on after all recipients are acknowledged. It can be turned off globally,
+or each state can be off, steady, or blink with 500 ms on/500 ms off phases. Successful delivery
+requests 1000 ms off, then 500 ms on, before returning to the selected state. A button press
 cancels the active and pending buzzer patterns and leaves the buzzer inactive; future
 events can request another pattern. It does not cancel Telegram delivery.
 
@@ -180,6 +252,10 @@ Avoid placing real passwords in shared shell history. There is no filesystem upl
 USB flashing remains the recovery path when Wi-Fi, OTA credentials, or firmware fail.
 A flash or restart creates a new startup notification, so use designated test recipients
 when validating deployment.
+Before flashing an older local deployment, add a unique `SETUP_PASSWORD` to its ignored
+`env.cpp`; the new firmware requires that symbol. Keep a recovery copy outside the device.
+Normal OTA updates retain compatible LittleFS settings. Back up deployment settings before
+changing firmware versions, because an older firmware may not understand the stored schema.
 
 ## Diagnostics and troubleshooting
 
@@ -190,6 +266,13 @@ when validating deployment.
 - If a recipient exhausts retries, check the bot and chat configuration locally. Exhausted
   work is not automatically reset until reboot.
 - If the buzzer or button behaves incorrectly, check polarity, grounding, and the D3 boot constraint.
+- If web setup is unavailable, check `SETUP_PASSWORD`: the example value and values outside
+  12–63 bytes cannot open the access point. Hold the button for five seconds only after boot
+  to enter recovery; its SSID is `LightOn-XXXXXX` at `192.168.4.1`.
+- If Wi-Fi changes are not confirmed from the new station address within 120 seconds, the
+  previous network settings return automatically. Refresh the browser at the old address.
+- If a save reports a storage error, do not assume it persisted; check LittleFS availability
+  in the authenticated Status section.
 - If OTA or cancellation briefly stalls during a send, see the synchronous transport limitation below.
 - If formatting fails, activate the environment and confirm clang-format 18.1.8 is installed.
 
@@ -198,6 +281,8 @@ when validating deployment.
 Delivery state exists only in RAM. A restart produces another startup event; a lost API
 response can cause a duplicate on retry even if Telegram accepted the earlier request.
 There is no exactly-once guarantee, durable queue, or sensor-based power measurement.
+Configuration is stored in LittleFS, but the delivery queue is still RAM-only. The web page
+and its assets are embedded in firmware; there is no separately flashed filesystem image.
 The fixed notification message/recipient buffers use approximately 1 KiB of static RAM.
 Each transport attempt allocates an 8 KiB response buffer plus a terminator on the heap
 with checked allocation failure. The JSON body is limited to 3200 bytes and the complete
@@ -223,12 +308,20 @@ worst-case attempt latency and TLS heap usage still require measurement on hardw
 The response loop yields for framework background work; it does not service application
 signals, buttons, or OTA while collecting the response.
 
+Web request headers are checked before body parsing. POST bodies are capped at 2048 bytes;
+one form at a time is handled by the ESP8266 web server. The browser may appear disconnected
+during a synchronous Telegram send and must fetch current state before retrying a mutation.
+Web sessions and test-send progress are RAM-only. A restart invalidates them. Configuration
+records are versioned and alternating, but their power-loss behavior and compatibility across
+OTA changes still require hardware verification. The browser API is HTTP only.
+
 Host tests and firmware compilation cannot establish electrical safety, physical timing,
-Wi-Fi/NTP recovery, real Telegram delivery, or OTA operation. These require an explicitly
+Wi-Fi/NTP recovery, LittleFS resilience, actual web provisioning, real Telegram delivery,
+heap use under concurrent web/TLS traffic, or OTA operation. These require an explicitly
 authorized hardware session with test recipients.
 
 ## Engineering guidance
 
 See [TECHNICAL_CONTEXT.md](TECHNICAL_CONTEXT.md) for the adopted engineering standard,
 [AGENTS.md](AGENTS.md) for project contracts and verification rules, and
-[REFACTORING_PLAN.md](REFACTORING_PLAN.md) for the original implementation plan.
+[PRD.md](PRD.md) for the Ukrainian web configuration requirements.

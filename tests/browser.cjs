@@ -1,0 +1,114 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const http = require('node:http');
+const { chromium } = require('playwright');
+
+const source = fs.readFileSync('include/infrastructure/web/WebPage.h', 'utf8');
+function embedded(tag) {
+    const match = source.match(new RegExp('R"' + tag + '\\(([\\s\\S]*?)\\)' + tag + '";'));
+    assert(match, `Missing embedded ${tag} resource`);
+    return match[1];
+}
+const assets = {
+    '/': ['text/html; charset=utf-8', embedded('html')],
+    '/app.css': ['text/css; charset=utf-8', embedded('css')],
+    '/app.js': ['application/javascript; charset=utf-8', embedded('js')],
+};
+const settings = {
+    revision: 1, ssid: 'example-network', ip: '192.168.1.20', gateway: '192.168.1.1',
+    subnet: '255.255.255.0', recipients: ['123'], message: 'Світло ввімкнене',
+    startupSound: true, wifiProgressSound: true, wifiConnectedSound: true,
+    ledEnabled: true, deliveryBlink: true, startupLed: 1, connectingLed: 1,
+    waitingLed: 0, idleLed: 1, errorLed: 1,
+};
+let testCalls = 0;
+let signalSaves = 0;
+const server = http.createServer(async (request, response) => {
+    const path = new URL(request.url, 'http://localhost').pathname;
+    if (assets[path]) {
+        const [type, body] = assets[path];
+        response.writeHead(200, { 'Content-Type': type });
+        response.end(body);
+        return;
+    }
+    const parts = [];
+    for await (const chunk of request) parts.push(chunk);
+    const form = new URLSearchParams(Buffer.concat(parts).toString('utf8'));
+    const send = (code, data, headers = {}) => {
+        response.writeHead(code, { 'Content-Type': 'application/json', ...headers });
+        response.end(JSON.stringify(data));
+    };
+    if (path === '/api/login') {
+        send(200, { csrf: 'test-csrf' }, { 'Set-Cookie': 'lon_session=test; HttpOnly; SameSite=Strict' });
+        return;
+    }
+    if (!request.headers.cookie?.includes('lon_session=test')) {
+        send(401, { error: 'Authentication required' });
+        return;
+    }
+    if (request.method === 'POST') {
+        assert.equal(request.headers['x-csrf'], 'test-csrf');
+    }
+    if (path === '/api/session') send(200, { csrf: 'test-csrf' });
+    else if (path === '/api/settings') send(200, settings);
+    else if (path === '/api/status') send(200, {
+        wifi: 'connected', ip: settings.ip, uptimeMs: 60000, firmware: 'test', timeReady: true,
+        delivery: 'delivered', wifiPending: false, recovery: false, storageReady: true,
+        ledActive: true, buzzerActive: false, recipients: [{ index: 0, outcome: 'delivered', attempts: 1 }],
+        tests: [0], testActive: false,
+    });
+    else if (path === '/api/signals') {
+        signalSaves += 1;
+        assert.equal(form.get('startupSound'), '0');
+        settings.startupSound = false;
+        settings.revision += 1;
+        send(200, { saved: true });
+    } else if (path === '/api/test') {
+        testCalls += 1;
+        assert.equal(form.get('mask'), '1');
+        send(202, { queued: true });
+    } else if (path === '/api/preview') send(202, { preview: true });
+    else send(404, { error: 'Not found' });
+});
+
+(async () => {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+    const browser = await chromium.launch({
+        channel: process.env.PW_CHANNEL || 'chromium', headless: true,
+    });
+    try {
+        const page = await browser.newPage({ viewport: { width: 360, height: 780 } });
+        const external = [];
+        page.on('request', req => {
+            if (!req.url().startsWith(`http://127.0.0.1:${port}/`)) external.push(req.url());
+        });
+        await page.goto(`http://127.0.0.1:${port}/`);
+        await page.getByLabel('Пароль', { exact: true }).fill('device-secret');
+        await page.getByRole('button', { name: 'Увійти' }).click();
+        await page.getByRole('heading', { name: 'Стан пристрою' }).waitFor();
+        assert.equal(testCalls, 0);
+        assert.equal(external.length, 0);
+        await page.getByRole('button', { name: 'Звук і світлодіод' }).click();
+        await page.getByLabel('Звук при появі світла').uncheck();
+        await page.getByRole('button', { name: 'Зберегти' }).click();
+        await page.getByText('Збережено', { exact: true }).waitFor();
+        assert.equal(signalSaves, 1);
+        assert.equal(testCalls, 0);
+        assert.equal(await page.locator('body').evaluate(node => node.scrollWidth <= innerWidth), true);
+        await page.getByRole('button', { name: 'Стан', exact: true }).click();
+        page.once('dialog', dialog => dialog.accept());
+        await page.getByRole('button', { name: 'Надіслати тестове повідомлення' }).click();
+        assert.equal(testCalls, 1);
+        console.log('Browser checks passed: login, mobile layout, signal save, explicit test send.');
+    } finally {
+        await browser.close();
+        server.close();
+    }
+})().catch(error => {
+    console.error(error);
+    server.close();
+    process.exitCode = 1;
+});

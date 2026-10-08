@@ -16,14 +16,24 @@ public:
     }
     void setLed(bool active) override {
         led.setState(active);
+        ledActive = active;
     }
     void setBuzzer(bool active) override {
         buzzer.setState(active);
+        buzzerActive = active;
+    }
+    bool isLedActive() const {
+        return ledActive;
+    }
+    bool isBuzzerActive() const {
+        return buzzerActive;
     }
 
 private:
     ExternalLedActuator& led;
     BuzzerActuator& buzzer;
+    bool ledActive = false;
+    bool buzzerActive = false;
 };
 
 class GpioButton : public ButtonPort {

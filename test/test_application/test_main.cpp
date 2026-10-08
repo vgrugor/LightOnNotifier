@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include <EEPROM.h>
+#include <LittleFS.h>
 #include <unity.h>
 
 #include "application/ConnectionService.h"
@@ -11,6 +13,7 @@
 #include "application/SignalController.h"
 #include "application/StaticNetworkConfig.h"
 #include "application/TimeService.h"
+#include "infrastructure/settings/SettingsStore.h"
 #include "infrastructure/telegram/HttpResponse.h"
 #include "infrastructure/telegram/TelegramAcknowledgement.h"
 #include "presentation/EventNotifier.h"
@@ -269,6 +272,28 @@ void test_connection_invalid_configuration_never_starts_or_retries() {
     TEST_ASSERT_EQUAL_UINT(0, port.starts);
     TEST_ASSERT_EQUAL_UINT(0, port.stops);
     TEST_ASSERT_EQUAL_UINT(1, events.count(EventType::WIFI_CONFIGURATION_INVALID));
+}
+
+void test_connection_reconfigure_recovers_invalid_settings_without_reboot() {
+    FakeConnection port;
+    FakeEvents events;
+    port.configured = false;
+    ConnectionService service(port, events);
+    service.begin(0);
+    assertState(ConnectionService::State::INVALID, service);
+    port.configured = true;
+    service.reconfigure(100);
+    assertState(ConnectionService::State::CONNECTING, service);
+    TEST_ASSERT_EQUAL_UINT(2, port.configurations);
+    TEST_ASSERT_EQUAL_UINT(1, port.starts);
+    port.connected = true;
+    service.update(101);
+    TEST_ASSERT_TRUE(service.isConnected());
+    port.connected = false;
+    service.reconfigure(200);
+    TEST_ASSERT_EQUAL_UINT(2, port.starts);
+    TEST_ASSERT_EQUAL_UINT(2, port.stops);
+    assertState(ConnectionService::State::CONNECTING, service);
 }
 
 void test_connection_unavailable_expires_and_retries_at_interval_boundaries() {
@@ -785,6 +810,167 @@ void test_signal_startup_and_delivery_blink_survive_millis_rollover() {
     TEST_ASSERT_FALSE(output.buzzer);
 }
 
+void test_configured_signal_modes_follow_startup_waiting_and_idle_boundaries() {
+    FakeOutput output;
+    FakeButton button;
+    DeviceSettings settings;
+    settings.startupSound = false;
+    settings.wifiProgressSound = false;
+    settings.wifiConnectedSound = false;
+    settings.startupLed = LedMode::BLINK;
+    settings.waitingLed = LedMode::OFF;
+    settings.idleLed = LedMode::OFF;
+    SignalController service(output, button);
+    service.setSettings(settings);
+    service.begin();
+    const uint32_t start = UINT32_MAX - 100;
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.onEvent(Event(EventType::WIFI_START_CONNECT));
+    service.update(start);
+    TEST_ASSERT_TRUE(output.led);
+    TEST_ASSERT_FALSE(output.buzzer);
+    service.update(start + 499);
+    TEST_ASSERT_TRUE(output.led);
+    service.update(start + 500);
+    TEST_ASSERT_FALSE(output.led);
+    service.setOperatingState(SignalController::OperatingState::WAITING);
+    service.update(start + SignalController::STARTUP_MS - 1);
+    TEST_ASSERT_FALSE(service.startupFinished());
+    service.update(start + SignalController::STARTUP_MS);
+    TEST_ASSERT_TRUE(service.startupFinished());
+    TEST_ASSERT_FALSE(output.led);
+    service.setOperatingState(SignalController::OperatingState::IDLE);
+    service.onEvent(Event(EventType::MESSAGE_SEND));
+    service.update(start + SignalController::STARTUP_MS + 1);
+    TEST_ASSERT_FALSE(output.led);
+    service.update(start + SignalController::STARTUP_MS + 1001);
+    TEST_ASSERT_TRUE(output.led);
+    service.update(start + SignalController::STARTUP_MS + 1501);
+    TEST_ASSERT_FALSE(output.led);
+}
+
+void test_configured_signal_switches_cancel_active_sound_and_global_led() {
+    FakeOutput output;
+    FakeButton button;
+    DeviceSettings settings;
+    SignalController service(output, button);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    TEST_ASSERT_TRUE(output.buzzer);
+    TEST_ASSERT_TRUE(output.led);
+    settings.startupSound = false;
+    settings.ledEnabled = false;
+    service.update(1);
+    TEST_ASSERT_FALSE(output.buzzer);
+    TEST_ASSERT_FALSE(output.led);
+    service.onEvent(Event(EventType::WIFI_CONNECTED));
+    service.onEvent(Event(EventType::MESSAGE_SEND));
+    service.update(1000);
+    TEST_ASSERT_FALSE(output.led);
+    settings.wifiConnectedSound = false;
+    service.update(1001);
+    TEST_ASSERT_FALSE(output.buzzer);
+    settings.startupSound = true;
+    service.update(SignalController::STARTUP_MS);
+    TEST_ASSERT_FALSE(output.buzzer);
+}
+
+void test_disabling_startup_sound_preserves_enabled_pending_wifi_success() {
+    FakeOutput output;
+    FakeButton button;
+    DeviceSettings settings;
+    SignalController service(output, button);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    service.onEvent(Event(EventType::WIFI_CONNECTED));
+    settings.startupSound = false;
+    service.update(1);
+    TEST_ASSERT_FALSE(output.buzzer);
+    service.update(1 + SignalController::CONNECTED_PULSE_MS);
+    TEST_ASSERT_TRUE(output.buzzer);
+}
+
+void test_configured_preview_respects_led_off_and_button_and_expires() {
+    FakeOutput output;
+    FakeButton button;
+    DeviceSettings settings;
+    settings.startupSound = false;
+    settings.ledEnabled = false;
+    SignalController service(output, button);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    service.update(SignalController::STARTUP_MS);
+    TEST_ASSERT_FALSE(service.startPreview(SignalController::Preview::LED, LedMode::BLINK,
+                                           SignalController::STARTUP_MS));
+    TEST_ASSERT_TRUE(service.startPreview(SignalController::Preview::STARTUP, LedMode::OFF,
+                                          SignalController::STARTUP_MS));
+    service.update(SignalController::STARTUP_MS + 1);
+    TEST_ASSERT_TRUE(output.buzzer);
+    TEST_ASSERT_FALSE(output.led);
+    button.pressed = true;
+    service.update(SignalController::STARTUP_MS + 2);
+    TEST_ASSERT_FALSE(output.buzzer);
+    button.pressed = false;
+    settings.ledEnabled = true;
+    TEST_ASSERT_TRUE(
+        service.startPreview(SignalController::Preview::LED, LedMode::BLINK, UINT32_MAX - 250));
+    service.update(UINT32_MAX - 250);
+    TEST_ASSERT_TRUE(output.led);
+    service.update(250);
+    TEST_ASSERT_FALSE(output.led);
+    service.update(2750);
+    TEST_ASSERT_FALSE(output.buzzer);
+}
+
+void test_wifi_transition_cancels_active_sound_preview() {
+    FakeOutput output;
+    FakeButton button;
+    DeviceSettings settings;
+    settings.startupSound = false;
+    SignalController service(output, button);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    service.update(SignalController::STARTUP_MS);
+    TEST_ASSERT_TRUE(service.startPreview(SignalController::Preview::STARTUP, LedMode::OFF,
+                                          SignalController::STARTUP_MS));
+    service.update(SignalController::STARTUP_MS + 1);
+    TEST_ASSERT_TRUE(output.buzzer);
+    service.onEvent(Event(EventType::WIFI_RECONNECT));
+    service.update(SignalController::STARTUP_MS + 2);
+    TEST_ASSERT_FALSE(output.buzzer);
+}
+
+void test_device_settings_validate_network_telegram_and_signal_modes() {
+    DeviceSettings settings;
+    strcpy(settings.ssid, "network");
+    strcpy(settings.ip, "192.168.1.20");
+    strcpy(settings.gateway, "192.168.1.1");
+    strcpy(settings.subnet, "255.255.255.0");
+    strcpy(settings.botToken, "123:abc");
+    strcpy(settings.message, "Light on");
+    strcpy(settings.recipients[0], "123");
+    settings.recipientCount = 1;
+    TEST_ASSERT_TRUE(validNetworkSettings(settings));
+    TEST_ASSERT_TRUE(validTelegramSettings(settings));
+    TEST_ASSERT_TRUE(validSignalSettings(settings));
+    settings.startupLed = static_cast<LedMode>(3);
+    TEST_ASSERT_FALSE(validSignalSettings(settings));
+    settings.startupLed = LedMode::STEADY;
+    strcpy(settings.recipients[0], "000123");
+    TEST_ASSERT_FALSE(validTelegramSettings(settings));
+    strcpy(settings.recipients[0], "123");
+    strcpy(settings.gateway, "192.168.2.1");
+    TEST_ASSERT_FALSE(validNetworkSettings(settings));
+}
+
 void test_application_services_ota_during_startup_and_missing_ntp_then_delivers() {
     EventNotifier events;
     FakeConnection network;
@@ -1078,6 +1264,91 @@ void test_notification_accepts_full_32_character_channel_name_and_preserves_case
     assertOutcome(NotificationService::Outcome::DELIVERED, service);
 }
 
+DeviceSettings validStoredSettings() {
+    DeviceSettings settings = {};
+    strcpy(settings.ssid, "network");
+    strcpy(settings.ip, "192.168.1.20");
+    strcpy(settings.gateway, "192.168.1.1");
+    strcpy(settings.subnet, "255.255.255.0");
+    strcpy(settings.botToken, "123:abc");
+    strcpy(settings.message, "Light on");
+    strcpy(settings.recipients[0], "123");
+    settings.recipientCount = 1;
+    settings.configured = true;
+    return settings;
+}
+
+void resetFakeStorage() {
+    LittleFS.files.clear();
+    LittleFS.failWrite = false;
+    LittleFS.failRename = false;
+    memset(EEPROM.bytes, 0, sizeof(EEPROM.bytes));
+    EEPROM.failCommit = false;
+}
+
+void test_settings_store_preserves_previous_record_after_interrupted_replacement() {
+    resetFakeStorage();
+    SettingsStore firstBoot;
+    TEST_ASSERT_TRUE(firstBoot.begin());
+    DeviceSettings original = validStoredSettings();
+    TEST_ASSERT_TRUE(firstBoot.save(original));
+    TEST_ASSERT_TRUE(firstBoot.wasProvisioned());
+    DeviceSettings replacement = original;
+    replacement.revision = 2;
+    strcpy(replacement.message, "Revised");
+    LittleFS.failRename = true;
+    TEST_ASSERT_FALSE(firstBoot.save(replacement));
+    LittleFS.failRename = false;
+    SettingsStore reboot;
+    TEST_ASSERT_TRUE(reboot.begin());
+    DeviceSettings loaded = {};
+    TEST_ASSERT_TRUE(reboot.load(loaded));
+    TEST_ASSERT_EQUAL_STRING("Light on", loaded.message);
+    TEST_ASSERT_TRUE(reboot.wasProvisioned());
+    TEST_ASSERT_TRUE(reboot.save(replacement));
+    SettingsStore nextBoot;
+    TEST_ASSERT_TRUE(nextBoot.begin());
+    TEST_ASSERT_TRUE(nextBoot.load(loaded));
+    TEST_ASSERT_EQUAL_STRING("Revised", loaded.message);
+}
+
+void test_settings_store_rejects_future_schema_until_explicit_reset() {
+    resetFakeStorage();
+    SettingsStore store;
+    TEST_ASSERT_TRUE(store.begin());
+    DeviceSettings original = validStoredSettings();
+    TEST_ASSERT_TRUE(store.save(original));
+    auto& record = LittleFS.files["/settings-a.bin"];
+    const uint32_t future = DeviceSettings::SCHEMA + 1;
+    memcpy(record.data() + 12, &future, sizeof(future));
+    SettingsStore reboot;
+    TEST_ASSERT_TRUE(reboot.begin());
+    DeviceSettings loaded = {};
+    TEST_ASSERT_FALSE(reboot.load(loaded));
+    TEST_ASSERT_TRUE(reboot.hasUnsupportedSchema());
+    TEST_ASSERT_FALSE(reboot.save(original));
+    DeviceSettings empty = {};
+    empty.revision = 2;
+    TEST_ASSERT_TRUE(reboot.reset(empty));
+    SettingsStore afterReset;
+    TEST_ASSERT_TRUE(afterReset.begin());
+    TEST_ASSERT_TRUE(afterReset.load(loaded));
+    TEST_ASSERT_FALSE(loaded.configured);
+    TEST_ASSERT_TRUE(afterReset.wasProvisioned());
+}
+
+void test_settings_store_requires_durable_provisioning_marker_before_first_record() {
+    resetFakeStorage();
+    EEPROM.failCommit = true;
+    SettingsStore store;
+    TEST_ASSERT_TRUE(store.begin());
+    DeviceSettings settings = validStoredSettings();
+    TEST_ASSERT_FALSE(store.save(settings));
+    TEST_ASSERT_FALSE(store.hasRecords());
+    EEPROM.failCommit = false;
+    TEST_ASSERT_TRUE(store.save(settings));
+}
+
 } // namespace
 
 void setUp() {}
@@ -1088,6 +1359,7 @@ int main() {
     RUN_TEST(test_dispatch_rejects_null_duplicate_and_capacity_then_removes_in_order);
     RUN_TEST(test_dispatch_rejects_mutation_and_nesting_and_borrows_payload_synchronously);
     RUN_TEST(test_connection_invalid_configuration_never_starts_or_retries);
+    RUN_TEST(test_connection_reconfigure_recovers_invalid_settings_without_reboot);
     RUN_TEST(test_connection_unavailable_expires_and_retries_at_interval_boundaries);
     RUN_TEST(test_connection_loss_retries_immediately_and_recovery_publishes_once);
     RUN_TEST(test_connection_retry_timing_survives_millis_rollover);
@@ -1109,6 +1381,12 @@ int main() {
     RUN_TEST(test_signal_startup_has_priority_and_pending_connected_supersedes_connecting);
     RUN_TEST(test_signal_delivery_led_blinks_then_keeps_final_on_state);
     RUN_TEST(test_signal_startup_and_delivery_blink_survive_millis_rollover);
+    RUN_TEST(test_configured_signal_modes_follow_startup_waiting_and_idle_boundaries);
+    RUN_TEST(test_configured_signal_switches_cancel_active_sound_and_global_led);
+    RUN_TEST(test_disabling_startup_sound_preserves_enabled_pending_wifi_success);
+    RUN_TEST(test_configured_preview_respects_led_off_and_button_and_expires);
+    RUN_TEST(test_wifi_transition_cancels_active_sound_preview);
+    RUN_TEST(test_device_settings_validate_network_telegram_and_signal_modes);
     RUN_TEST(test_application_services_ota_during_startup_and_missing_ntp_then_delivers);
     RUN_TEST(test_application_missing_wifi_still_finishes_signals_and_retries_without_sending);
     RUN_TEST(test_http_content_length_completes_without_waiting_for_connection_close);
@@ -1121,5 +1399,8 @@ int main() {
     RUN_TEST(test_static_network_rejects_invalid_settings_atomically_without_dhcp_fallback);
     RUN_TEST(test_notification_rejects_noncanonical_numeric_ids_and_duplicate_channel_names);
     RUN_TEST(test_notification_accepts_full_32_character_channel_name_and_preserves_case);
+    RUN_TEST(test_settings_store_preserves_previous_record_after_interrupted_replacement);
+    RUN_TEST(test_settings_store_rejects_future_schema_until_explicit_reset);
+    RUN_TEST(test_settings_store_requires_durable_provisioning_marker_before_first_record);
     return UNITY_END();
 }

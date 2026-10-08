@@ -29,3 +29,14 @@ jobs:
         run: pio test -e native
       - name: Build firmware with placeholder configuration
         run: pio run -e nodemcuv2_ci
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install browser test dependencies
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.25.0 --activate
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+      - name: Run browser behavior tests
+        run: pnpm test:e2e

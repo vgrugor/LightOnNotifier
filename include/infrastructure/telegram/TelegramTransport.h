@@ -16,6 +16,9 @@ class TelegramTransport : public MessageSender {
 public:
     explicit TelegramTransport(const char* token);
     void begin();
+    void setToken(const char* value) {
+        token = value;
+    }
     bool send(const char* recipient, const char* message) override;
 
 private:

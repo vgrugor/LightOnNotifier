@@ -1,21 +1,23 @@
 # LightOnNotifier engineering instructions
 
 This project adopts [TECHNICAL_CONTEXT.md](TECHNICAL_CONTEXT.md), standard version 1.0.0.
-Follow its applicable requirements. The project is ESP8266 Arduino firmware, with no
-web interface, persistent storage, filesystem assets, or physical light sensor.
+Follow its applicable requirements. The project is ESP8266 Arduino firmware with an embedded
+local web interface and LittleFS configuration storage, but no separately deployed filesystem
+assets or physical light sensor.
 
 ## Purpose and repository map
 
 The device interprets every boot as a `LIGHT_ON` event and sends the configured Ukrainian
 Telegram message to multiple recipients. An external LED, buzzer, and cancellation button
-provide local feedback. Static-address Wi-Fi, NTP/TLS readiness, serial diagnostics, and OTA
-are the deployed interfaces.
+provide local feedback. Static-address Wi-Fi, NTP/TLS readiness, the protected web interface,
+serial diagnostics, and OTA are the deployed interfaces.
 
 - `include/domain/`: device-independent event and value contracts.
 - `include/application/`, `src/application/`: lifecycle, timed signals, connection/time policies,
-  atomic static-network validation, and per-recipient notification state; keep them independent
-  of Arduino and device libraries.
-- `include/infrastructure/`, `src/infrastructure/`: board/network/GPIO/Telegram/OTA adapters.
+  atomic static-network validation, settings validation, and per-recipient notification state;
+  keep them independent of Arduino and device libraries.
+- `include/infrastructure/`, `src/infrastructure/`: board/network/GPIO/Telegram/OTA adapters,
+  LittleFS settings storage, and local web server with embedded page assets.
 - `include/presentation/`, `src/presentation/`: event dispatch and serial event formatting.
 - `src/main.cpp`: static-lifetime dependency wiring and setup/loop coordination.
 - `test/`: deterministic host behavior tests for the actual neutral production modules.
@@ -38,22 +40,25 @@ python scripts/check_format.py
 pio test -e native
 pio run -e nodemcuv2_ci
 pio run -e nodemcuv2
+pnpm test:e2e
 ```
 
-The final command requires existing local configuration. Use `nodemcuv2_ci` to compile
+The local firmware build requires existing local configuration, including a unique
+`SETUP_PASSWORD`. Use `nodemcuv2_ci` to compile
 with generated placeholders under `.pio` without accessing local credentials. Native tests
 must never depend on live Wi-Fi, Telegram, a physical board, real waits, or test order.
 Cover interval boundaries and `uint32_t` wraparound when changing timed behavior.
 The native source filter compiles `application/*.cpp`, `presentation/EventNotifier.cpp`,
-`infrastructure/telegram/HttpResponse.cpp`, and `infrastructure/telegram/TelegramAcknowledgement.cpp`.
+`infrastructure/telegram/HttpResponse.cpp`, `infrastructure/telegram/TelegramAcknowledgement.cpp`,
+and `infrastructure/settings/SettingsStore.cpp` with fake LittleFS/EEPROM headers.
 HTTP framing and filtered acknowledgment parsing are actual production code, tested with
 the firmware's pinned ArduinoJson 7.4.2 revision and Unity 2.6.1.
 
 Formatting uses clang-format 18.1.8 and `.clang-format`; the check script rejects another
 formatter version. `python scripts/check_format.py --fix` applies formatting to public C++
 headers, firmware/test sources, and the configuration example, excluding local credentials.
-CI uses the same format, host test, and placeholder firmware build commands. CI configuration
-is not evidence of a passing remote run; report execution results separately.
+CI also installs pinned browser-test dependencies and runs `pnpm test:e2e` with Chromium.
+CI configuration is not evidence of a passing remote run; report execution results separately.
 
 Do not run firmware uploads, deployment, or external notifications unless explicitly
 authorized for that task. Compile and test changes before completion; report any missing
@@ -76,9 +81,21 @@ pattern, with connection success taking priority over progress. Progress events 
 per second and request 100 ms off, 100 ms on, then 100 ms off.
 The connected pattern uses 500 ms off, 500 ms on, 1000 ms off, 500 ms on, then 500 ms off.
 Button cancellation drops active and pending buzzer patterns and leaves the buzzer inactive;
-future events can request new patterns. It does not cancel delivery. The LED is high during
-connection and low on connection success. Successful delivery gives 1000 ms low, then
-500 ms high, and ends high. Repeated delivery events restart that indication.
+future events can request new patterns. It does not cancel delivery. By default the LED is
+high during connection and low while waiting after connection. Successful delivery gives
+1000 ms low, then 500 ms high before the selected state resumes. Repeated delivery events
+restart that indication.
+
+Saved sound settings independently enable the startup, Wi-Fi progress, and Wi-Fi success
+patterns. Disabling a category stops its active/pending sound on the next update. Saved LED
+settings include a global off switch and off/steady/500 ms blink modes for startup, connecting,
+waiting, idle, and error. Startup LED indication lasts ten seconds independently of sound.
+Success indication remains 1000 ms off then 500 ms on when enabled, then returns to the
+configured state. Invalid configuration has priority over success; global off has priority
+over every indication. Idle means startup has ended and all recipients are acknowledged.
+Partial or pending delivery is not idle. Short button presses cancel sound; a five-second
+hold after boot opens protected recovery access for ten minutes. D3 held at reset still selects
+the hardware bootloader.
 
 ### Connection and calendar time
 
@@ -89,6 +106,11 @@ and must not silently fall back to DHCP. `parseStaticNetwork()` validates four d
 a contiguous mask other than all-zero/all-one, distinct unicast host addresses on the same
 subnet, and exclusion of network/broadcast addresses. It changes its output only after full
 validation succeeds. Check the return value of adapter configuration.
+
+Web Wi-Fi changes are provisional for 120 seconds. Confirmation requires authenticated access
+through the candidate station address; failure or timeout restores the prior configuration.
+No DHCP fallback is introduced. A protected access point is available before first setup and
+through a post-boot long button hold, but not merely because station Wi-Fi is unavailable.
 
 Calendar time is separate from monotonic interval timing. Start NTP without a wait loop and
 retry acquisition every 60 seconds while unavailable. TLS time is considered valid at Unix
@@ -125,6 +147,15 @@ state across reconnects. Exhaustion remains terminal until reboot. Restart creat
 event; no persistence or exactly-once delivery exists. A response loss can cause duplicate
 delivery on retry. Diagnostics must use recipient indices rather than private IDs.
 
+Settings for the next boot live in versioned, integrity-checked LittleFS records. Alternating
+record files preserve the previous complete version while a replacement is written. An EEPROM
+marker distinguishes first migration from damaged or reset storage, preventing a silent
+reimport of compiled credentials after provisioning. Startup
+message/recipient data and the transport token for an in-progress event remain owned copies;
+web edits take effect for a later boot or an explicit test. Reset stores an unconfigured
+tombstone and must not reimport compiled credentials. Test messages have one attempt per
+selected recipient and no automatic retry; they do not affect startup delivery state.
+
 Acknowledgment requires valid, complete HTTP 200 framing and a JSON Boolean `ok: true`.
 Content-Length completion ends collection without waiting for disconnect; close-delimited
 responses are accepted when no length is declared. Malformed framing, truncated/oversized
@@ -152,8 +183,17 @@ GPIO adapters and observers borrow their dependencies; do not copy hardware-owni
 
 Verify the deployed board's electrical ratings and use an appropriate LED resistor and
 buzzer driver. OTA is a trusted-LAN interface; configure an authentication password and
-do not expose it to the public internet. Tokens, passwords, static addresses, and chat IDs
-belong only in ignored local configuration. Test/CI fixtures contain placeholders only.
+do not expose it to the public internet. Initial tokens, passwords, static addresses, and
+chat IDs belong only in ignored local configuration; web edits are persisted in LittleFS.
+Test/CI fixtures contain placeholders only.
+Provision a unique printable-ASCII `SETUP_PASSWORD` of 12–63 bytes per device in ignored local
+configuration.
+The tracked example value is rejected at runtime. The setup access point uses that secret;
+the web login accepts it before administrator setup and during physical recovery. The
+administrator password is stored as a salted iterative SHA-256 hash. Sessions expire after
+30 minutes and state changes require matching origin and CSRF token. The web interface is HTTP
+on a trusted LAN: browser traffic and submitted secrets are not encrypted. Never expose it to
+the public internet. Only embedded HTML/CSS/JS is served; no filesystem image is uploaded.
 
 ## Known limitations and documented exceptions
 
@@ -184,6 +224,7 @@ as part of this refactor; replacement requirement: use the pinned check for all 
 and review semantics independently of formatting. Avoid unrelated format changes in future work.
 
 There is no separately deployed filesystem image. Actual button response, output timing,
-Wi-Fi/NTP outage recovery, OTA reachability, Telegram delivery, and transport latency/heap
-usage require hardware verification. Preserve the shared standard file; document future
+Wi-Fi/NTP outage recovery, provisioning and rollback, LittleFS power-loss behavior,
+web/Telegram concurrent heap usage, OTA reachability, Telegram delivery, and transport
+latency require hardware verification. Preserve the shared standard file; document future
 project-specific exceptions here with their reason and replacement requirement.

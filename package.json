@@ -1,0 +1,11 @@
+{
+  "name": "light-on-notifier-browser-tests",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "test:e2e": "node tests/browser.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

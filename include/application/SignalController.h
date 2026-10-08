@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+#include "application/DeviceSettings.h"
 #include "application/Ports.h"
 #include "domain/Event.h"
 
@@ -16,6 +17,18 @@ public:
     void begin();
     void onEvent(const Event& event) override;
     void update(uint32_t now);
+    enum class OperatingState { CONNECTING, WAITING, IDLE, ERROR };
+    void setSettings(const DeviceSettings& value) {
+        settings = &value;
+    }
+    void setOperatingState(OperatingState value) {
+        operatingState = value;
+    }
+    bool startupFinished() const {
+        return !startupWindow && active != Pattern::STARTUP && requested != Pattern::STARTUP;
+    }
+    enum class Preview { STARTUP, CONNECTING, CONNECTED, LED };
+    bool startPreview(Preview kind, LedMode mode, uint32_t now);
 
 private:
     enum class Pattern { NONE, STARTUP, CONNECTING, CONNECTED };
@@ -31,5 +44,17 @@ private:
     bool ledBlinkRequested = false;
     bool ledBlinkActive = false;
     bool ledBase = false;
+    const DeviceSettings* settings = nullptr;
+    OperatingState operatingState = OperatingState::CONNECTING;
+    bool startupWindow = false;
+    uint32_t startupLedStarted = 0;
+    bool startupLedStartedFlag = false;
+    bool previewActive = false;
+    bool previewNeedsSilence = false;
+    Preview previewKind = Preview::STARTUP;
+    LedMode previewLedMode = LedMode::OFF;
+    uint32_t previewStarted = 0;
+    uint32_t stateStarted = 0;
+    OperatingState lastOperatingState = OperatingState::CONNECTING;
 };
 #endif

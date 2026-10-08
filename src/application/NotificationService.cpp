@@ -62,26 +62,31 @@ bool validRecipient(const char* text) {
 }
 } // namespace
 
+bool NotificationService::validate(const char* text, const char* const* ids, size_t size) {
+    if (!fits(text, MAX_MESSAGE_BYTES) || ids == nullptr || size == 0 || size > MAX_RECIPIENTS) {
+        return false;
+    }
+    for (size_t i = 0; i < size; ++i) {
+        if (!validRecipient(ids[i])) {
+            return false;
+        }
+        for (size_t j = 0; j < i; ++j) {
+            if (sameRecipient(ids[i], ids[j])) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool NotificationService::enqueue(const char* text, const char* const* ids, size_t size) {
     if (initialized) {
         return false;
     }
     initialized = true;
-    if (!fits(text, MAX_MESSAGE_BYTES) || ids == nullptr || size == 0 || size > MAX_RECIPIENTS) {
+    if (!validate(text, ids, size)) {
         events.publish(Event(EventType::NOTIFICATION_INVALID));
         return false;
-    }
-    for (size_t i = 0; i < size; ++i) {
-        if (!validRecipient(ids[i])) {
-            events.publish(Event(EventType::NOTIFICATION_INVALID));
-            return false;
-        }
-        for (size_t j = 0; j < i; ++j) {
-            if (sameRecipient(ids[i], ids[j])) {
-                events.publish(Event(EventType::NOTIFICATION_INVALID));
-                return false;
-            }
-        }
     }
     strcpy(message, text);
     count = size;
