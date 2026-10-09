@@ -3,6 +3,9 @@
 #include <stddef.h>
 #include <string.h>
 
+#include <memory>
+#include <new>
+
 #include <EEPROM.h>
 #include <LittleFS.h>
 
@@ -134,17 +137,20 @@ bool SettingsStore::save(const DeviceSettings& settings) {
         provisionedMarker = true;
     }
     const int target = activeSlot == 0 ? 1 : 0;
-    Record record = {};
-    record.magic = MAGIC;
-    record.length = sizeof(DeviceSettings);
-    record.data = settings;
-    record.checksum = checksum(record.data);
+    std::unique_ptr<Record> record(new (std::nothrow) Record{});
+    if (!record) {
+        return false;
+    }
+    record->magic = MAGIC;
+    record->length = sizeof(DeviceSettings);
+    record->data = settings;
+    record->checksum = checksum(record->data);
     File file = LittleFS.open(TEMP_PATH, "w");
     if (!file) {
         return false;
     }
-    const bool written =
-        file.write(reinterpret_cast<const uint8_t*>(&record), sizeof(record)) == sizeof(record);
+    const bool written = file.write(reinterpret_cast<const uint8_t*>(record.get()),
+                                    sizeof(Record)) == sizeof(Record);
     file.flush();
     file.close();
     if (!written) {
@@ -152,10 +158,10 @@ bool SettingsStore::save(const DeviceSettings& settings) {
         return false;
     }
     File verify = LittleFS.open(TEMP_PATH, "r");
-    if (!verify || verify.size() != sizeof(record) ||
-        verify.read(reinterpret_cast<uint8_t*>(&record), sizeof(record)) != sizeof(record) ||
-        record.magic != MAGIC || record.length != sizeof(DeviceSettings) ||
-        record.checksum != checksum(record.data)) {
+    if (!verify || verify.size() != sizeof(Record) ||
+        verify.read(reinterpret_cast<uint8_t*>(record.get()), sizeof(Record)) != sizeof(Record) ||
+        record->magic != MAGIC || record->length != sizeof(DeviceSettings) ||
+        record->checksum != checksum(record->data)) {
         LittleFS.remove(TEMP_PATH);
         return false;
     }

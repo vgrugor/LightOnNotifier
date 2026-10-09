@@ -1,6 +1,8 @@
 #include "infrastructure/web/WebPortal.h"
 
 #include <algorithm>
+#include <memory>
+#include <new>
 #include <string.h>
 
 #include <ArduinoJson.h>
@@ -19,6 +21,10 @@ constexpr uint32_t LOGIN_DELAY_MS = 60000;
 constexpr size_t MAX_FORM_BYTES = 2048;
 constexpr size_t MAX_HEADER_BYTES = 1024;
 constexpr char FIRMWARE_VERSION[] = "0.2.0-dev";
+
+std::unique_ptr<DeviceSettings> copySettings(const DeviceSettings& settings) {
+    return std::unique_ptr<DeviceSettings>(new (std::nothrow) DeviceSettings(settings));
+}
 
 bool validSetupSecret(const char* value) {
     if (value == nullptr || strcmp(value, "unique-device-setup-password") == 0) {
@@ -470,8 +476,12 @@ void WebPortal::saveSignals() {
     if (!authorized(true) || !checkRevision()) {
         return;
     }
-    DeviceSettings candidate = settings;
-    candidate.startupSound = server.arg("startupSound") == "1";
+    auto candidate = copySettings(settings);
+    if (!candidate) {
+        fail(503, "Недостатньо пам’яті для збереження");
+        return;
+    }
+    candidate->startupSound = server.arg("startupSound") == "1";
     const String startupSeconds = server.arg("startupSoundSeconds");
     if (startupSeconds.isEmpty() || startupSeconds.length() > 2) {
         fail(400, "Тривалість стартового звуку має бути від 1 до 60 секунд");
@@ -486,18 +496,18 @@ void WebPortal::saveSignals() {
         }
         seconds = seconds * 10 + static_cast<uint32_t>(digit - '0');
     }
-    candidate.startupSoundSeconds = seconds;
+    candidate->startupSoundSeconds = seconds;
     if (seconds < 1 || seconds > 60) {
         fail(400, "Тривалість стартового звуку має бути від 1 до 60 секунд");
         return;
     }
-    candidate.wifiProgressSound = server.arg("wifiProgressSound") == "1";
-    candidate.wifiConnectedSound = server.arg("wifiConnectedSound") == "1";
-    candidate.ledEnabled = server.arg("ledEnabled") == "1";
-    candidate.deliveryBlink = server.arg("deliveryBlink") == "1";
+    candidate->wifiProgressSound = server.arg("wifiProgressSound") == "1";
+    candidate->wifiConnectedSound = server.arg("wifiConnectedSound") == "1";
+    candidate->ledEnabled = server.arg("ledEnabled") == "1";
+    candidate->deliveryBlink = server.arg("deliveryBlink") == "1";
     const char* names[] = {"startupLed", "connectingLed", "waitingLed", "idleLed", "errorLed"};
-    LedMode* modes[] = {&candidate.startupLed, &candidate.connectingLed, &candidate.waitingLed,
-                        &candidate.idleLed, &candidate.errorLed};
+    LedMode* modes[] = {&candidate->startupLed, &candidate->connectingLed, &candidate->waitingLed,
+                        &candidate->idleLed, &candidate->errorLed};
     for (size_t i = 0; i < 5; ++i) {
         const String value = server.arg(names[i]);
         if (value != "0" && value != "1" && value != "2") {
@@ -506,26 +516,30 @@ void WebPortal::saveSignals() {
         }
         *modes[i] = static_cast<LedMode>(value.toInt());
     }
-    saveCandidate(candidate);
+    saveCandidate(*candidate);
 }
 
 void WebPortal::saveTelegram() {
     if (!authorized(true) || !checkRevision()) {
         return;
     }
-    DeviceSettings candidate = settings;
+    auto candidate = copySettings(settings);
+    if (!candidate) {
+        fail(503, "Недостатньо пам’яті для збереження");
+        return;
+    }
     const String token = server.arg("token");
-    if (!token.isEmpty() && !copyField(candidate.botToken, sizeof(candidate.botToken), token)) {
+    if (!token.isEmpty() && !copyField(candidate->botToken, sizeof(candidate->botToken), token)) {
         fail(400, "Завеликий токен");
         return;
     }
-    if (!copyField(candidate.message, sizeof(candidate.message), server.arg("message"))) {
+    if (!copyField(candidate->message, sizeof(candidate->message), server.arg("message"))) {
         fail(400, "Повідомлення перевищує 512 байтів");
         return;
     }
     const String list = server.arg("recipients");
-    memset(candidate.recipients, 0, sizeof(candidate.recipients));
-    candidate.recipientCount = 0;
+    memset(candidate->recipients, 0, sizeof(candidate->recipients));
+    candidate->recipientCount = 0;
     int begin = 0;
     while (begin < static_cast<int>(list.length())) {
         int end = list.indexOf('\n', begin);
@@ -534,20 +548,20 @@ void WebPortal::saveTelegram() {
         }
         String value = list.substring(begin, end);
         value.trim();
-        if (candidate.recipientCount >= 8 || value.isEmpty() ||
-            !copyField(candidate.recipients[candidate.recipientCount], 34, value)) {
+        if (candidate->recipientCount >= 8 || value.isEmpty() ||
+            !copyField(candidate->recipients[candidate->recipientCount], 34, value)) {
             fail(400, "Неправильний список одержувачів");
             return;
         }
-        ++candidate.recipientCount;
+        ++candidate->recipientCount;
         begin = end + 1;
     }
-    if (!validTelegramSettings(candidate)) {
+    if (!validTelegramSettings(*candidate)) {
         fail(400, "Неправильні налаштування Telegram");
         return;
     }
-    candidate.configured = validNetworkSettings(candidate);
-    if (saveCandidate(candidate)) {
+    candidate->configured = validNetworkSettings(*candidate);
+    if (saveCandidate(*candidate)) {
         memset(testState, 0, sizeof(testState));
     }
 }
@@ -560,21 +574,25 @@ void WebPortal::applyWifi() {
         fail(409, "Дочекайтеся підтвердження або відновлення попередньої мережі");
         return;
     }
-    DeviceSettings candidate = settings;
+    auto candidate = copySettings(settings);
+    if (!candidate) {
+        fail(503, "Недостатньо пам’яті для збереження");
+        return;
+    }
     const String password = server.arg("password");
-    if (!copyField(candidate.ssid, sizeof(candidate.ssid), server.arg("ssid")) ||
+    if (!copyField(candidate->ssid, sizeof(candidate->ssid), server.arg("ssid")) ||
         (!password.isEmpty() &&
-         !copyField(candidate.wifiPassword, sizeof(candidate.wifiPassword), password)) ||
-        !copyField(candidate.ip, sizeof(candidate.ip), server.arg("ip")) ||
-        !copyField(candidate.gateway, sizeof(candidate.gateway), server.arg("gateway")) ||
-        !copyField(candidate.subnet, sizeof(candidate.subnet), server.arg("subnet"))) {
+         !copyField(candidate->wifiPassword, sizeof(candidate->wifiPassword), password)) ||
+        !copyField(candidate->ip, sizeof(candidate->ip), server.arg("ip")) ||
+        !copyField(candidate->gateway, sizeof(candidate->gateway), server.arg("gateway")) ||
+        !copyField(candidate->subnet, sizeof(candidate->subnet), server.arg("subnet"))) {
         fail(400, "Завелике мережеве поле");
         return;
     }
     if (server.arg("openNetwork") == "1") {
-        candidate.wifiPassword[0] = '\0';
+        candidate->wifiPassword[0] = '\0';
     }
-    if (!validNetworkSettings(candidate)) {
+    if (!validNetworkSettings(*candidate)) {
         fail(400, "Неправильні статичні мережеві параметри");
         return;
     }
@@ -583,7 +601,7 @@ void WebPortal::applyWifi() {
     memcpy(previousWifi.ip, settings.ip, sizeof(previousWifi.ip));
     memcpy(previousWifi.gateway, settings.gateway, sizeof(previousWifi.gateway));
     memcpy(previousWifi.subnet, settings.subnet, sizeof(previousWifi.subnet));
-    settings = candidate;
+    settings = *candidate;
     wifiPending = true;
     wifiReconfigureScheduled = true;
     wifiReconfigureRequestedAt = millis();
@@ -599,15 +617,19 @@ void WebPortal::confirmWifi() {
         fail(409, "Відкрийте нову IP-адресу для підтвердження");
         return;
     }
-    DeviceSettings candidate = settings;
-    candidate.configured = validTelegramSettings(candidate);
-    candidate.revision = settings.revision + 1;
-    if (!store.save(candidate)) {
+    auto candidate = copySettings(settings);
+    if (!candidate) {
+        fail(503, "Недостатньо пам’яті для збереження");
+        return;
+    }
+    candidate->configured = validTelegramSettings(*candidate);
+    candidate->revision = settings.revision + 1;
+    if (!store.save(*candidate)) {
         rollbackWifi(millis());
         fail(500, "Не вдалося зберегти Wi-Fi");
         return;
     }
-    settings = candidate;
+    settings = *candidate;
     wifiPending = false;
     if (settings.configured && !recovery) {
         stopAccessPointPending = true;
@@ -638,14 +660,18 @@ void WebPortal::changePassword() {
         fail(400, "Пароль має містити 10–64 байти");
         return;
     }
-    DeviceSettings candidate = settings;
-    if (os_get_random(candidate.adminSalt, sizeof(candidate.adminSalt)) != 0) {
+    auto candidate = copySettings(settings);
+    if (!candidate) {
+        fail(503, "Недостатньо пам’яті для збереження");
+        return;
+    }
+    if (os_get_random(candidate->adminSalt, sizeof(candidate->adminSalt)) != 0) {
         fail(503, "Джерело випадкових чисел недоступне");
         return;
     }
-    hashPassword(password, candidate.adminSalt, candidate.adminHash);
-    candidate.adminConfigured = true;
-    if (saveCandidate(candidate)) {
+    hashPassword(password, candidate->adminSalt, candidate->adminHash);
+    candidate->adminConfigured = true;
+    if (saveCandidate(*candidate)) {
         sessionToken = String();
         csrfToken = String();
     }
@@ -719,13 +745,17 @@ void WebPortal::reset() {
     if (!authorized(true) || !checkRevision()) {
         return;
     }
-    DeviceSettings candidate = {};
-    candidate.revision = settings.revision + 1;
-    if (!store.reset(candidate)) {
+    std::unique_ptr<DeviceSettings> candidate(new (std::nothrow) DeviceSettings{});
+    if (!candidate) {
+        fail(503, "Недостатньо пам’яті для збереження");
+        return;
+    }
+    candidate->revision = settings.revision + 1;
+    if (!store.reset(*candidate)) {
         fail(500, "Не вдалося скинути налаштування");
         return;
     }
-    settings = candidate;
+    settings = *candidate;
     sendJson(200, "{\"saved\":true}");
     testActive = false;
     sessionToken = String();
