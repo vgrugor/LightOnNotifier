@@ -10,6 +10,7 @@
 #include <bearssl/bearssl.h>
 #include <osapi.h>
 
+#include "infrastructure/web/BoundedField.h"
 #include "infrastructure/web/WebPage.h"
 
 namespace {
@@ -447,11 +448,7 @@ bool WebPortal::checkRevision() {
 }
 
 bool WebPortal::copyField(char* target, size_t capacity, const String& value) {
-    if (value.length() >= capacity || memchr(value.c_str(), '\0', value.length()) != nullptr) {
-        return false;
-    }
-    memcpy(target, value.c_str(), value.length() + 1);
-    return true;
+    return copyBoundedField(target, capacity, value.c_str(), value.length());
 }
 
 bool WebPortal::saveCandidate(DeviceSettings& candidate) {

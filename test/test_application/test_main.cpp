@@ -16,9 +16,34 @@
 #include "infrastructure/settings/SettingsStore.h"
 #include "infrastructure/telegram/HttpResponse.h"
 #include "infrastructure/telegram/TelegramAcknowledgement.h"
+#include "infrastructure/web/BoundedField.h"
 #include "presentation/EventNotifier.h"
 
 namespace {
+
+void test_web_field_accepts_valid_wifi_values_and_rejects_oversize_or_embedded_null() {
+    char ssid[33] = {};
+    char password[65] = {};
+    char address[16] = {};
+    TEST_ASSERT_TRUE(copyBoundedField(ssid, sizeof(ssid), "ENERGYzal", 9));
+    TEST_ASSERT_EQUAL_STRING("ENERGYzal", ssid);
+    TEST_ASSERT_TRUE(copyBoundedField(password, sizeof(password), "1234567890", 10));
+    TEST_ASSERT_EQUAL_STRING("1234567890", password);
+    TEST_ASSERT_TRUE(copyBoundedField(address, sizeof(address), "192.168.1.204", 13));
+    TEST_ASSERT_EQUAL_STRING("192.168.1.204", address);
+    TEST_ASSERT_TRUE(copyBoundedField(address, sizeof(address), "255.255.255.0", 13));
+    TEST_ASSERT_EQUAL_STRING("255.255.255.0", address);
+
+    const char maxLength[] = "abcdefghijklmnopqrstuvwxyz123456";
+    TEST_ASSERT_TRUE(copyBoundedField(ssid, sizeof(ssid), maxLength, 32));
+    TEST_ASSERT_EQUAL_STRING(maxLength, ssid);
+    const char tooLong[] = "abcdefghijklmnopqrstuvwxyz1234567";
+    TEST_ASSERT_FALSE(copyBoundedField(ssid, sizeof(ssid), tooLong, 33));
+    TEST_ASSERT_EQUAL_STRING(maxLength, ssid);
+    const char embeddedNull[] = {'E', 'N', '\0', 'X'};
+    TEST_ASSERT_FALSE(copyBoundedField(ssid, sizeof(ssid), embeddedNull, sizeof(embeddedNull)));
+    TEST_ASSERT_EQUAL_STRING(maxLength, ssid);
+}
 
 struct RecordedEvent {
     EventType type;
@@ -1421,6 +1446,7 @@ void tearDown() {}
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_web_field_accepts_valid_wifi_values_and_rejects_oversize_or_embedded_null);
     RUN_TEST(test_dispatch_rejects_null_duplicate_and_capacity_then_removes_in_order);
     RUN_TEST(test_dispatch_rejects_mutation_and_nesting_and_borrows_payload_synchronously);
     RUN_TEST(test_connection_invalid_configuration_never_starts_or_retries);
