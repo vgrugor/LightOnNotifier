@@ -20,7 +20,7 @@ constexpr uint32_t WIFI_RESPONSE_MS = 1000;
 constexpr uint32_t RECOVERY_MS = 600000;
 constexpr uint32_t LOGIN_DELAY_MS = 60000;
 constexpr size_t MAX_FORM_BYTES = 2048;
-constexpr size_t MAX_HEADER_BYTES = 1024;
+constexpr size_t MAX_HEADER_BYTES = 3072;
 constexpr char FIRMWARE_VERSION[] = "0.2.0-dev";
 
 std::unique_ptr<DeviceSettings> copySettings(const DeviceSettings& settings) {
@@ -44,16 +44,20 @@ bool validSetupSecret(const char* value) {
 }
 
 bool boundedPostHeaders(WiFiClient& client) {
-    char header[MAX_HEADER_BYTES + 1] = {};
+    std::unique_ptr<char[]> header(new (std::nothrow) char[MAX_HEADER_BYTES + 1]);
+    if (!header) {
+        return false;
+    }
+    header[0] = '\0';
     const uint32_t started = millis();
     size_t length = 0;
     while (uint32_t(millis() - started) < 1000) {
         const size_t available =
             std::min(static_cast<size_t>(client.available()), MAX_HEADER_BYTES);
         if (available > length) {
-            length = client.peekBytes(header, available);
+            length = client.peekBytes(header.get(), available);
             header[length] = '\0';
-            if (strstr(header, "\r\n\r\n") != nullptr) {
+            if (strstr(header.get(), "\r\n\r\n") != nullptr) {
                 break;
             }
             if (length == MAX_HEADER_BYTES) {
@@ -62,12 +66,12 @@ bool boundedPostHeaders(WiFiClient& client) {
         }
         yield();
     }
-    if (strstr(header, "\r\n\r\n") == nullptr) {
+    if (strstr(header.get(), "\r\n\r\n") == nullptr) {
         return false;
     }
     bool hasLength = false;
     size_t bodyLength = 0;
-    char* line = header;
+    char* line = header.get();
     while (*line != '\0' && !(line[0] == '\r' && line[1] == '\n')) {
         char* end = strstr(line, "\r\n");
         if (end == nullptr) {

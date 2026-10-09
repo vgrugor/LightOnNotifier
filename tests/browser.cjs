@@ -27,6 +27,7 @@ const settings = {
 let testCalls = 0;
 let signalSaves = 0;
 let wifiRequests = 0;
+let previewRequests = 0;
 const server = http.createServer(async (request, response) => {
     const path = new URL(request.url, 'http://localhost').pathname;
     if (assets[path]) {
@@ -77,7 +78,13 @@ const server = http.createServer(async (request, response) => {
         wifiRequests += 1;
         response.writeHead(202, { 'Content-Type': 'application/json' });
         response.end();
-    } else if (path === '/api/preview') send(202, { preview: true });
+    } else if (path === '/api/preview') {
+        previewRequests += 1;
+        if (previewRequests === 1) {
+            response.writeHead(413, { 'Content-Length': '0' });
+            response.end();
+        } else send(202, { preview: true });
+    }
     else send(404, { error: 'Not found' });
 });
 
@@ -107,6 +114,11 @@ const server = http.createServer(async (request, response) => {
         assert.equal(signalSaves, 1);
         assert.equal(await page.getByLabel('Тривалість звуку при появі світла (секунди)').inputValue(), '3');
         assert.equal(testCalls, 0);
+        await page.getByRole('button', { name: 'Світлодіод', exact: true }).click();
+        await page.getByText('HTTP-заголовки або дані запиту завеликі').waitFor();
+        await page.getByRole('button', { name: 'Світлодіод', exact: true }).click();
+        await page.getByText('Попередній перегляд запущено').waitFor();
+        assert.equal(previewRequests, 2);
         assert.equal(await page.locator('body').evaluate(node => node.scrollWidth <= innerWidth), true);
         await page.getByRole('button', { name: 'Стан', exact: true }).click();
         page.once('dialog', dialog => dialog.accept());
