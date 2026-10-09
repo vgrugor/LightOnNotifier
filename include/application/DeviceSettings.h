@@ -7,7 +7,7 @@
 enum class LedMode : uint8_t { OFF, STEADY, BLINK };
 
 struct DeviceSettings {
-    static constexpr uint32_t SCHEMA = 1;
+    static constexpr uint32_t SCHEMA = 2;
     uint32_t schema = SCHEMA;
     uint32_t revision = 1;
     bool configured = false;
@@ -33,6 +33,7 @@ struct DeviceSettings {
     uint8_t adminSalt[16] = {};
     uint8_t adminHash[32] = {};
     bool adminConfigured = false;
+    uint32_t startupSoundSeconds = 10;
 };
 
 bool validNetworkSettings(const DeviceSettings& settings);

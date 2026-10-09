@@ -408,6 +408,7 @@ void WebPortal::getSettings() {
         ids.add(settings.recipients[i]);
     }
     doc["startupSound"] = settings.startupSound;
+    doc["startupSoundSeconds"] = settings.startupSoundSeconds;
     doc["wifiProgressSound"] = settings.wifiProgressSound;
     doc["wifiConnectedSound"] = settings.wifiConnectedSound;
     doc["ledEnabled"] = settings.ledEnabled;
@@ -471,6 +472,25 @@ void WebPortal::saveSignals() {
     }
     DeviceSettings candidate = settings;
     candidate.startupSound = server.arg("startupSound") == "1";
+    const String startupSeconds = server.arg("startupSoundSeconds");
+    if (startupSeconds.isEmpty() || startupSeconds.length() > 2) {
+        fail(400, "Тривалість стартового звуку має бути від 1 до 60 секунд");
+        return;
+    }
+    uint32_t seconds = 0;
+    for (size_t i = 0; i < startupSeconds.length(); ++i) {
+        const char digit = startupSeconds[i];
+        if (digit < '0' || digit > '9') {
+            fail(400, "Тривалість стартового звуку має бути від 1 до 60 секунд");
+            return;
+        }
+        seconds = seconds * 10 + static_cast<uint32_t>(digit - '0');
+    }
+    candidate.startupSoundSeconds = seconds;
+    if (seconds < 1 || seconds > 60) {
+        fail(400, "Тривалість стартового звуку має бути від 1 до 60 секунд");
+        return;
+    }
     candidate.wifiProgressSound = server.arg("wifiProgressSound") == "1";
     candidate.wifiConnectedSound = server.arg("wifiConnectedSound") == "1";
     candidate.ledEnabled = server.arg("ledEnabled") == "1";

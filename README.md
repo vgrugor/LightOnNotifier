@@ -102,6 +102,8 @@ local `env.cpp` from its firmware sources.
 On first boot after upgrading, valid build-time Wi-Fi and Telegram values initialize the
 saved configuration once. Later web edits use LittleFS. A small EEPROM marker records that
 the device was provisioned so a damaged filesystem does not reimport compiled credentials.
+Existing version-one records are read with a default ten-second startup sound; the next
+settings save writes the new record format while retaining the other values.
 A deliberate web reset clears the saved configuration and does not reimport build-time credentials.
 If no usable configuration
 exists, the device opens a protected setup access point named `LightOn-XXXXXX` with address
@@ -224,9 +226,11 @@ GPIO0 is a boot-strapping pin: holding the D3 button low while powering up or re
 enters the ESP8266 serial bootloader. Verify the circuit against your board and peripheral
 ratings before deployment. GPIO configuration occurs explicitly during startup.
 
-When enabled, the startup buzzer lasts nominally ten seconds and takes priority over Wi-Fi
+When enabled, the startup buzzer lasts the configured 1–60 seconds (ten seconds by default)
+and takes priority over Wi-Fi
 patterns. A connection
 attempt progress event requests 100 ms off, 100 ms on, then 100 ms off, once per second.
+The manual startup-sound preview remains limited to three seconds.
 Successful connection gives 500 ms off, 500 ms on, 1000 ms off, 500 ms on, then 500 ms off.
 The external LED defaults to steady on during startup and connection, off while waiting for
 delivery, and steady on after all recipients are acknowledged. It can be turned off globally,

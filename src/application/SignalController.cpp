@@ -115,10 +115,11 @@ void SignalController::update(uint32_t now) {
         }
         if (patternStartedFlag) {
             const uint32_t elapsed = uint32_t(now - patternStarted);
-            const uint32_t duration = active == Pattern::STARTUP
-                                          ? STARTUP_MS
-                                          : (active == Pattern::CONNECTED ? 6 * CONNECTED_PULSE_MS
-                                                                          : 3 * CONNECT_PULSE_MS);
+            const uint32_t duration =
+                active == Pattern::STARTUP
+                    ? (settings == nullptr ? STARTUP_MS : settings->startupSoundSeconds * 1000UL)
+                    : (active == Pattern::CONNECTED ? 6 * CONNECTED_PULSE_MS
+                                                    : 3 * CONNECT_PULSE_MS);
             if (elapsed >= duration) {
                 active = Pattern::NONE;
                 patternStartedFlag = false;

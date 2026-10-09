@@ -683,6 +683,28 @@ void test_signal_startup_is_requested_without_io_and_finishes_at_boundary() {
     TEST_ASSERT_FALSE(output.led);
 }
 
+void test_signal_uses_saved_startup_duration_across_tick_wrap_without_shortening_led_window() {
+    FakeOutput output;
+    FakeButton button;
+    DeviceSettings settings;
+    settings.startupSoundSeconds = 3;
+    SignalController service(output, button);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    const uint32_t start = UINT32_MAX - 1500;
+    service.update(start);
+    TEST_ASSERT_TRUE(output.buzzer);
+    TEST_ASSERT_TRUE(output.led);
+    service.update(start + 2999);
+    TEST_ASSERT_TRUE(output.buzzer);
+    service.update(start + 3000);
+    TEST_ASSERT_FALSE(output.buzzer);
+    TEST_ASSERT_FALSE(service.startupFinished());
+    service.update(start + SignalController::STARTUP_MS);
+    TEST_ASSERT_TRUE(service.startupFinished());
+}
+
 void test_signal_button_preheld_and_pressed_during_pattern_cancel_without_restarting() {
     FakeOutput output;
     FakeButton button;
@@ -961,6 +983,13 @@ void test_device_settings_validate_network_telegram_and_signal_modes() {
     TEST_ASSERT_TRUE(validNetworkSettings(settings));
     TEST_ASSERT_TRUE(validTelegramSettings(settings));
     TEST_ASSERT_TRUE(validSignalSettings(settings));
+    settings.startupSoundSeconds = 0;
+    TEST_ASSERT_FALSE(validSignalSettings(settings));
+    settings.startupSoundSeconds = 60;
+    TEST_ASSERT_TRUE(validSignalSettings(settings));
+    settings.startupSoundSeconds = 61;
+    TEST_ASSERT_FALSE(validSignalSettings(settings));
+    settings.startupSoundSeconds = 10;
     settings.startupLed = static_cast<LedMode>(3);
     TEST_ASSERT_FALSE(validSignalSettings(settings));
     settings.startupLed = LedMode::STEADY;
@@ -1349,6 +1378,42 @@ void test_settings_store_requires_durable_provisioning_marker_before_first_recor
     TEST_ASSERT_TRUE(store.save(settings));
 }
 
+void test_settings_store_migrates_version_one_without_losing_saved_configuration() {
+    resetFakeStorage();
+    DeviceSettings oldSettings = validStoredSettings();
+    oldSettings.schema = 1;
+    constexpr size_t oldSize = 1132;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(&oldSettings);
+    uint32_t checksum = 2166136261UL;
+    for (size_t i = 0; i < oldSize; ++i) {
+        checksum = (checksum ^ bytes[i]) * 16777619UL;
+    }
+    uint32_t header[] = {0x4c4f4e31, oldSize, checksum};
+    auto& file = LittleFS.files["/settings-a.bin"];
+    file.resize(sizeof(header) + oldSize);
+    memcpy(file.data(), header, sizeof(header));
+    memcpy(file.data() + sizeof(header), bytes, oldSize);
+
+    SettingsStore store;
+    TEST_ASSERT_TRUE(store.begin());
+    DeviceSettings loaded;
+    TEST_ASSERT_TRUE(store.load(loaded));
+    TEST_ASSERT_EQUAL_UINT32(DeviceSettings::SCHEMA, loaded.schema);
+    TEST_ASSERT_EQUAL_UINT32(10, loaded.startupSoundSeconds);
+    TEST_ASSERT_EQUAL_STRING(oldSettings.ssid, loaded.ssid);
+    TEST_ASSERT_EQUAL_STRING(oldSettings.message, loaded.message);
+    loaded.revision = 2;
+    loaded.startupSoundSeconds = 25;
+    TEST_ASSERT_TRUE(store.save(loaded));
+
+    SettingsStore reboot;
+    TEST_ASSERT_TRUE(reboot.begin());
+    DeviceSettings reloaded;
+    TEST_ASSERT_TRUE(reboot.load(reloaded));
+    TEST_ASSERT_EQUAL_UINT32(25, reloaded.startupSoundSeconds);
+    TEST_ASSERT_EQUAL_STRING(oldSettings.ssid, reloaded.ssid);
+}
+
 } // namespace
 
 void setUp() {}
@@ -1376,6 +1441,8 @@ int main() {
     RUN_TEST(test_notification_retry_and_send_gap_survive_millis_rollover);
     RUN_TEST(test_notification_retry_and_send_gap_start_after_blocking_send_completes);
     RUN_TEST(test_signal_startup_is_requested_without_io_and_finishes_at_boundary);
+    RUN_TEST(
+        test_signal_uses_saved_startup_duration_across_tick_wrap_without_shortening_led_window);
     RUN_TEST(test_signal_button_preheld_and_pressed_during_pattern_cancel_without_restarting);
     RUN_TEST(test_signal_connecting_pulse_and_connected_two_pulses_match_boundaries);
     RUN_TEST(test_signal_startup_has_priority_and_pending_connected_supersedes_connecting);
@@ -1402,5 +1469,6 @@ int main() {
     RUN_TEST(test_settings_store_preserves_previous_record_after_interrupted_replacement);
     RUN_TEST(test_settings_store_rejects_future_schema_until_explicit_reset);
     RUN_TEST(test_settings_store_requires_durable_provisioning_marker_before_first_record);
+    RUN_TEST(test_settings_store_migrates_version_one_without_losing_saved_configuration);
     return UNITY_END();
 }

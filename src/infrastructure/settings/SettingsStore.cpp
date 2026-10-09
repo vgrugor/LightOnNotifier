@@ -1,5 +1,6 @@
 #include "infrastructure/settings/SettingsStore.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #include <EEPROM.h>
@@ -8,8 +9,13 @@
 namespace {
 constexpr uint32_t MAGIC = 0x4c4f4e31;
 constexpr uint32_t PROVISIONED_MARKER = 0x4c4f4e50;
+constexpr uint32_t LEGACY_SCHEMA = 1;
+constexpr size_t LEGACY_SETTINGS_SIZE = 1132;
 const char* const SLOT_PATHS[2] = {"/settings-a.bin", "/settings-b.bin"};
 constexpr char TEMP_PATH[] = "/settings.tmp";
+
+static_assert(offsetof(DeviceSettings, startupSoundSeconds) == LEGACY_SETTINGS_SIZE,
+              "The version-one settings layout changed");
 
 struct Record {
     uint32_t magic;
@@ -18,26 +24,46 @@ struct Record {
     DeviceSettings data;
 };
 
-uint32_t checksum(const DeviceSettings& data) {
+uint32_t checksum(const uint8_t* bytes, size_t length) {
     uint32_t hash = 2166136261UL;
-    const auto* bytes = reinterpret_cast<const uint8_t*>(&data);
-    for (size_t i = 0; i < sizeof(data); ++i) {
+    for (size_t i = 0; i < length; ++i) {
         hash = (hash ^ bytes[i]) * 16777619UL;
     }
     return hash;
 }
 
+uint32_t checksum(const DeviceSettings& data) {
+    return checksum(reinterpret_cast<const uint8_t*>(&data), sizeof(data));
+}
+
 bool readSlot(int slot, Record& record) {
     File file = LittleFS.open(SLOT_PATHS[slot], "r");
-    if (!file || file.size() != sizeof(record) ||
-        file.read(reinterpret_cast<uint8_t*>(&record), sizeof(record)) != sizeof(record)) {
+    record = {};
+    constexpr size_t HEADER_SIZE = offsetof(Record, data);
+    if (!file || file.size() < HEADER_SIZE ||
+        file.read(reinterpret_cast<uint8_t*>(&record), HEADER_SIZE) != HEADER_SIZE ||
+        record.magic != MAGIC ||
+        (record.length != sizeof(DeviceSettings) && record.length != LEGACY_SETTINGS_SIZE) ||
+        file.size() != HEADER_SIZE + record.length ||
+        static_cast<size_t>(file.read(reinterpret_cast<uint8_t*>(&record.data), record.length)) !=
+            record.length ||
+        record.checksum !=
+            checksum(reinterpret_cast<const uint8_t*>(&record.data), record.length)) {
         return false;
     }
-    return record.magic == MAGIC && record.length == sizeof(DeviceSettings) &&
-           record.data.schema == DeviceSettings::SCHEMA &&
-           record.checksum == checksum(record.data) && validSignalSettings(record.data) &&
-           (!record.data.configured ||
-            (validNetworkSettings(record.data) && validTelegramSettings(record.data)));
+    if (record.length == LEGACY_SETTINGS_SIZE && record.data.schema == LEGACY_SCHEMA) {
+        record.data.schema = DeviceSettings::SCHEMA;
+        record.data.startupSoundSeconds = 10;
+    } else if (record.length != sizeof(DeviceSettings) ||
+               record.data.schema != DeviceSettings::SCHEMA) {
+        return false;
+    }
+    if (!validSignalSettings(record.data) ||
+        (record.data.configured &&
+         (!validNetworkSettings(record.data) || !validTelegramSettings(record.data)))) {
+        return false;
+    }
+    return true;
 }
 
 bool futureSchema(int slot) {

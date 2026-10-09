@@ -49,7 +49,8 @@ bool validTelegramSettings(const DeviceSettings& settings) {
 }
 
 bool validSignalSettings(const DeviceSettings& settings) {
-    return validMode(settings.startupLed) && validMode(settings.connectingLed) &&
+    return settings.startupSoundSeconds >= 1 && settings.startupSoundSeconds <= 60 &&
+           validMode(settings.startupLed) && validMode(settings.connectingLed) &&
            validMode(settings.waitingLed) && validMode(settings.idleLed) &&
            validMode(settings.errorLed);
 }

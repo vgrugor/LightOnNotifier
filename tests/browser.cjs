@@ -19,7 +19,8 @@ const assets = {
 const settings = {
     revision: 1, ssid: 'example-network', ip: '192.168.1.20', gateway: '192.168.1.1',
     subnet: '255.255.255.0', recipients: ['123'], message: 'Світло ввімкнене',
-    startupSound: true, wifiProgressSound: true, wifiConnectedSound: true,
+    startupSound: true, startupSoundSeconds: 10,
+    wifiProgressSound: true, wifiConnectedSound: true,
     ledEnabled: true, deliveryBlink: true, startupLed: 1, connectingLed: 1,
     waitingLed: 0, idleLed: 1, errorLed: 1,
 };
@@ -63,7 +64,9 @@ const server = http.createServer(async (request, response) => {
     else if (path === '/api/signals') {
         signalSaves += 1;
         assert.equal(form.get('startupSound'), '0');
+        assert.equal(form.get('startupSoundSeconds'), '3');
         settings.startupSound = false;
+        settings.startupSoundSeconds = 3;
         settings.revision += 1;
         send(200, { saved: true });
     } else if (path === '/api/test') {
@@ -98,9 +101,11 @@ const server = http.createServer(async (request, response) => {
         assert.equal(external.length, 0);
         await page.getByRole('button', { name: 'Звук і світлодіод' }).click();
         await page.getByLabel('Звук при появі світла').uncheck();
+        await page.getByLabel('Тривалість звуку при появі світла (секунди)').fill('3');
         await page.getByRole('button', { name: 'Зберегти' }).click();
         await page.getByText('Збережено', { exact: true }).waitFor();
         assert.equal(signalSaves, 1);
+        assert.equal(await page.getByLabel('Тривалість звуку при появі світла (секунди)').inputValue(), '3');
         assert.equal(testCalls, 0);
         assert.equal(await page.locator('body').evaluate(node => node.scrollWidth <= innerWidth), true);
         await page.getByRole('button', { name: 'Стан', exact: true }).click();

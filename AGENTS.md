@@ -75,8 +75,9 @@ GPIO0 must be high at reset for normal boot; a pressed D3 button selects the boo
 Do not alter pins, polarity, or boot behavior as incidental cleanup.
 
 Use unsigned elapsed-time subtraction on `uint32_t` ticks. Signal callbacks request
-patterns; they never wait for completion. The startup buzzer is active for ten seconds and
-takes priority over Wi-Fi patterns. During startup, coalesce connectivity into one pending
+patterns; they never wait for completion. The startup buzzer duration is configurable from
+one to 60 seconds and defaults to ten seconds. It takes priority over Wi-Fi patterns.
+During startup, coalesce connectivity into one pending
 pattern, with connection success taking priority over progress. Progress events occur once
 per second and request 100 ms off, 100 ms on, then 100 ms off.
 The connected pattern uses 500 ms off, 500 ms on, 1000 ms off, 500 ms on, then 500 ms off.
@@ -87,9 +88,10 @@ high during connection and low while waiting after connection. Successful delive
 restart that indication.
 
 Saved sound settings independently enable the startup, Wi-Fi progress, and Wi-Fi success
-patterns. Disabling a category stops its active/pending sound on the next update. Saved LED
-settings include a global off switch and off/steady/500 ms blink modes for startup, connecting,
-waiting, idle, and error. Startup LED indication lasts ten seconds independently of sound.
+patterns and set the startup duration. Disabling a category stops its active/pending sound on
+the next update. Saved LED settings include a global off switch and off/steady/500 ms blink
+modes for startup, connecting, waiting, idle, and error. Startup LED indication lasts ten
+seconds independently of sound.
 Success indication remains 1000 ms off then 500 ms on when enabled, then returns to the
 configured state. Invalid configuration has priority over success; global off has priority
 over every indication. Idle means startup has ended and all recipients are acknowledged.
@@ -155,6 +157,8 @@ message/recipient data and the transport token for an in-progress event remain o
 web edits take effect for a later boot or an explicit test. Reset stores an unconfigured
 tombstone and must not reimport compiled credentials. Test messages have one attempt per
 selected recipient and no automatic retry; they do not affect startup delivery state.
+Version-one settings records migrate to version two in memory with the default ten-second
+startup sound and are rewritten only when settings are saved.
 
 Acknowledgment requires valid, complete HTTP 200 framing and a JSON Boolean `ok: true`.
 Content-Length completion ends collection without waiting for disconnect; close-delimited
