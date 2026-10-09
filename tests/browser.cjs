@@ -107,6 +107,8 @@ const server = http.createServer(async (request, response) => {
         assert.equal(testCalls, 0);
         assert.equal(external.length, 0);
         await page.getByRole('button', { name: 'Звук і світлодіод' }).click();
+        assert.deepEqual(await page.locator('#previewMode option').allTextContents(),
+            ['Вимкнено', 'Світиться постійно', 'Блимає']);
         await page.getByLabel('Звук при появі світла').uncheck();
         await page.getByLabel('Тривалість звуку при появі світла (секунди)').fill('3');
         await page.getByRole('button', { name: 'Зберегти' }).click();
