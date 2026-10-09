@@ -111,6 +111,10 @@ apply Wi-Fi settings. Open the proposed station IP address from that network and
 within 120 seconds. Set an administrator password of 12–64 bytes in the Device section.
 Unconfirmed network settings revert automatically. If the stored configuration is unreadable,
 the device enters protected setup rather than silently importing compiled credentials.
+The Wi-Fi change endpoint acknowledges the provisional settings before disconnecting from the
+old network. If the browser loses that response, check the proposed IP address and confirm
+there; do not immediately submit the change again. The previous network returns after 120
+seconds without confirmation.
 
 Chat identifiers accept canonical nonzero decimal IDs with an optional leading minus,
 without leading zeros, or public channel usernames beginning with `@`. Usernames contain

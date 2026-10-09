@@ -70,6 +70,8 @@ private:
     } previousWifi;
     bool wifiPending = false;
     uint32_t wifiStarted = 0;
+    bool wifiReconfigureScheduled = false;
+    uint32_t wifiReconfigureRequestedAt = 0;
     bool accessPointActive = false;
     bool stopAccessPointPending = false;
     bool recovery = false;

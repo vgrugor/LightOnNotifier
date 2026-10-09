@@ -25,6 +25,7 @@ const settings = {
 };
 let testCalls = 0;
 let signalSaves = 0;
+let wifiRequests = 0;
 const server = http.createServer(async (request, response) => {
     const path = new URL(request.url, 'http://localhost').pathname;
     if (assets[path]) {
@@ -69,6 +70,10 @@ const server = http.createServer(async (request, response) => {
         testCalls += 1;
         assert.equal(form.get('mask'), '1');
         send(202, { queued: true });
+    } else if (path === '/api/wifi') {
+        wifiRequests += 1;
+        response.writeHead(202, { 'Content-Type': 'application/json' });
+        response.end();
     } else if (path === '/api/preview') send(202, { preview: true });
     else send(404, { error: 'Not found' });
 });
@@ -102,7 +107,14 @@ const server = http.createServer(async (request, response) => {
         page.once('dialog', dialog => dialog.accept());
         await page.getByRole('button', { name: 'Надіслати тестове повідомлення' }).click();
         assert.equal(testCalls, 1);
-        console.log('Browser checks passed: login, mobile layout, signal save, explicit test send.');
+        await page.getByRole('button', { name: 'Wi-Fi', exact: true }).click();
+        page.once('dialog', dialog => dialog.accept());
+        await page.getByRole('button', { name: 'Застосувати та перевірити' }).click();
+        await page.getByText('Відповідь не підтверджена.', { exact: false }).waitFor();
+        assert.equal(wifiRequests, 1);
+        assert.equal(await page.getByText('Відкрити 192.168.1.20').getAttribute('href'),
+            'http://192.168.1.20/');
+        console.log('Browser checks passed: login, mobile layout, signal save, explicit test send, interrupted Wi-Fi response.');
     } finally {
         await browser.close();
         server.close();

@@ -13,6 +13,7 @@
 namespace {
 constexpr uint32_t SESSION_MS = 30UL * 60UL * 1000UL;
 constexpr uint32_t WIFI_CONFIRM_MS = 120000;
+constexpr uint32_t WIFI_RESPONSE_MS = 1000;
 constexpr uint32_t RECOVERY_MS = 600000;
 constexpr uint32_t LOGIN_DELAY_MS = 60000;
 constexpr size_t MAX_FORM_BYTES = 2048;
@@ -535,6 +536,10 @@ void WebPortal::applyWifi() {
     if (!authorized(true) || !checkRevision()) {
         return;
     }
+    if (wifiPending) {
+        fail(409, "Дочекайтеся підтвердження або відновлення попередньої мережі");
+        return;
+    }
     DeviceSettings candidate = settings;
     const String password = server.arg("password");
     if (!copyField(candidate.ssid, sizeof(candidate.ssid), server.arg("ssid")) ||
@@ -560,16 +565,17 @@ void WebPortal::applyWifi() {
     memcpy(previousWifi.subnet, settings.subnet, sizeof(previousWifi.subnet));
     settings = candidate;
     wifiPending = true;
-    wifiStarted = millis();
+    wifiReconfigureScheduled = true;
+    wifiReconfigureRequestedAt = millis();
     sendJson(202, "{\"pending\":true}");
-    connection.reconfigure(wifiStarted);
 }
 
 void WebPortal::confirmWifi() {
     if (!authorized(true) || !wifiPending) {
         return;
     }
-    if (!connection.isConnected() || server.client().localIP() != WiFi.localIP()) {
+    if (wifiReconfigureScheduled || !connection.isConnected() ||
+        server.client().localIP() != WiFi.localIP()) {
         fail(409, "Відкрийте нову IP-адресу для підтвердження");
         return;
     }
@@ -599,6 +605,7 @@ void WebPortal::rollbackWifi(uint32_t now) {
     memcpy(settings.gateway, previousWifi.gateway, sizeof(previousWifi.gateway));
     memcpy(settings.subnet, previousWifi.subnet, sizeof(previousWifi.subnet));
     wifiPending = false;
+    wifiReconfigureScheduled = false;
     connection.reconfigure(now);
 }
 
@@ -750,9 +757,10 @@ void WebPortal::update(uint32_t now) {
     if (restartRequested && uint32_t(now - restartAt) >= 1000) {
         ESP.restart();
     }
-    if (wifiPending && (connection.state() == ConnectionService::State::INVALID ||
-                        connection.state() == ConnectionService::State::RETRY_WAIT ||
-                        uint32_t(now - wifiStarted) >= WIFI_CONFIRM_MS)) {
+    if (wifiPending && !wifiReconfigureScheduled &&
+        (connection.state() == ConnectionService::State::INVALID ||
+         connection.state() == ConnectionService::State::RETRY_WAIT ||
+         uint32_t(now - wifiStarted) >= WIFI_CONFIRM_MS)) {
         rollbackWifi(now);
     }
     if (recovery && !wifiPending && uint32_t(now - recoveryStarted) >= RECOVERY_MS) {
@@ -794,6 +802,12 @@ void WebPortal::update(uint32_t now) {
         }
     }
     server.handleClient();
+    if (wifiReconfigureScheduled &&
+        uint32_t(millis() - wifiReconfigureRequestedAt) >= WIFI_RESPONSE_MS) {
+        wifiReconfigureScheduled = false;
+        wifiStarted = millis();
+        connection.reconfigure(wifiStarted);
+    }
     if (stopAccessPointPending) {
         stopAccessPointPending = false;
         stopAccessPoint();
