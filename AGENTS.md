@@ -221,6 +221,17 @@ and scheduling overhead; it is not a measured end-to-end latency guarantee.
 The response collection loop calls `yield()` for framework background work. This does
 not run application services or establish a measured watchdog or responsiveness budget.
 
+The ESP8266 web server's pre-route hook can inspect complete headers only when they fit in
+the first TCP receive buffer: the framework's `WiFiClient::peekBytes()` does not copy across
+chained buffers. Split headers therefore continue through the framework parser; the parsed
+Content-Length, transfer encoding, and form fields are checked before application state
+changes, but the framework may allocate the declared body before those checks. The affected
+shared rule is **Embedded runtime and resource constraints**. This is an explicit limitation
+on a trusted LAN. Replacement requirement: use a bounded streaming HTTP parser or a
+framework hook that exposes complete headers before body allocation; verify peak heap use
+and malformed split requests on hardware. The pre-route inspection buffer is 3073 heap
+bytes per POST and is released before the route runs.
+
 The adopted formatter was introduced with the architectural refactor as one working change
 rather than a separate formatting-only commit. The affected **Code style / Formatting tools**
 SHOULD rule recommends dedicated adoption before broad formatting. The files are being replaced

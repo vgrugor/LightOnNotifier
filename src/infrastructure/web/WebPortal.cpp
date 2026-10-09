@@ -60,6 +60,10 @@ bool boundedPostHeaders(WiFiClient& client) {
             if (strstr(header.get(), "\r\n\r\n") != nullptr) {
                 break;
             }
+            if (length < available) {
+                // peekBytes() cannot copy the rest of a chained TCP buffer.
+                return true;
+            }
             if (length == MAX_HEADER_BYTES) {
                 return false;
             }
@@ -67,7 +71,9 @@ bool boundedPostHeaders(WiFiClient& client) {
         yield();
     }
     if (strstr(header.get(), "\r\n\r\n") == nullptr) {
-        return false;
+        // ESP8266 WiFiClient::peekBytes() sees only the first chained TCP buffer.
+        // Let the web server finish split headers, then validate parsed fields below.
+        return true;
     }
     bool hasLength = false;
     size_t bodyLength = 0;
@@ -146,7 +152,8 @@ void WebPortal::begin() {
         }
         return ESP8266WebServer::CLIENT_REQUEST_CAN_CONTINUE;
     });
-    server.collectHeaders("Cookie", "X-CSRF", "Origin", "Content-Type", "Content-Length");
+    server.collectHeaders("Cookie", "X-CSRF", "Origin", "Content-Type", "Content-Length",
+                          "Transfer-Encoding");
     routes();
     server.begin();
     if (!settings.configured) {
@@ -209,7 +216,21 @@ bool WebPortal::validRequest(bool mutation) {
         return false;
     }
     const String lengthHeader = server.header("Content-Length");
-    if (lengthHeader.length() > 5 || lengthHeader.toInt() > static_cast<int>(MAX_FORM_BYTES)) {
+    if (!server.header("Transfer-Encoding").isEmpty() || lengthHeader.isEmpty() ||
+        lengthHeader.length() > 4) {
+        fail(413, "Завеликий або некоректний запит");
+        return false;
+    }
+    size_t bodyLength = 0;
+    for (size_t index = 0; index < lengthHeader.length(); ++index) {
+        const char digit = lengthHeader[index];
+        if (digit < '0' || digit > '9') {
+            fail(413, "Завеликий або некоректний запит");
+            return false;
+        }
+        bodyLength = bodyLength * 10 + static_cast<size_t>(digit - '0');
+    }
+    if (bodyLength > MAX_FORM_BYTES) {
         fail(413, "Завеликий запит");
         return false;
     }
