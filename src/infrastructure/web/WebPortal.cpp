@@ -43,6 +43,24 @@ bool validSetupSecret(const char* value) {
     return true;
 }
 
+bool parseHour(const String& value, uint8_t& hour) {
+    if (value.isEmpty() || value.length() > 2) {
+        return false;
+    }
+    uint8_t parsed = 0;
+    for (size_t i = 0; i < value.length(); ++i) {
+        if (value[i] < '0' || value[i] > '9') {
+            return false;
+        }
+        parsed = static_cast<uint8_t>(parsed * 10 + value[i] - '0');
+    }
+    if (parsed > 23) {
+        return false;
+    }
+    hour = parsed;
+    return true;
+}
+
 bool boundedPostHeaders(WiFiClient& client) {
     std::unique_ptr<char[]> header(new (std::nothrow) char[MAX_HEADER_BYTES + 1]);
     if (!header) {
@@ -399,6 +417,8 @@ void WebPortal::status() {
             : outcomeName(notifications.outcome());
     doc["ledActive"] = outputs.isLedActive();
     doc["buzzerActive"] = outputs.isBuzzerActive();
+    doc["quietHoursEnabled"] = settings.quietHoursEnabled;
+    doc["quietHoursActive"] = signals.quietHoursActive();
     doc["wifiPending"] = wifiPending;
     doc["recovery"] = recovery;
     doc["storageReady"] = store.available();
@@ -443,6 +463,9 @@ void WebPortal::getSettings() {
     doc["startupSoundSeconds"] = settings.startupSoundSeconds;
     doc["wifiProgressSound"] = settings.wifiProgressSound;
     doc["wifiConnectedSound"] = settings.wifiConnectedSound;
+    doc["quietHoursEnabled"] = settings.quietHoursEnabled;
+    doc["quietStartHour"] = settings.quietStartHour;
+    doc["quietEndHour"] = settings.quietEndHour;
     doc["ledEnabled"] = settings.ledEnabled;
     doc["deliveryBlink"] = settings.deliveryBlink;
     doc["startupLed"] = static_cast<uint8_t>(settings.startupLed);
@@ -525,6 +548,13 @@ void WebPortal::saveSignals() {
     }
     candidate->wifiProgressSound = server.arg("wifiProgressSound") == "1";
     candidate->wifiConnectedSound = server.arg("wifiConnectedSound") == "1";
+    candidate->quietHoursEnabled = server.arg("quietHoursEnabled") == "1";
+    if (!parseHour(server.arg("quietStartHour"), candidate->quietStartHour) ||
+        !parseHour(server.arg("quietEndHour"), candidate->quietEndHour) ||
+        (candidate->quietHoursEnabled && candidate->quietStartHour == candidate->quietEndHour)) {
+        fail(400, "Вкажіть різні години початку й кінця нічного режиму (0–23)");
+        return;
+    }
     candidate->ledEnabled = server.arg("ledEnabled") == "1";
     candidate->deliveryBlink = server.arg("deliveryBlink") == "1";
     const char* names[] = {"startupLed", "connectingLed", "waitingLed", "idleLed", "errorLed"};
@@ -725,7 +755,8 @@ void WebPortal::preview() {
         return;
     }
     if (!signals.startPreview(selected, static_cast<LedMode>(modeValue.toInt()), millis())) {
-        fail(409, "Перегляд недоступний під час запуску або коли світлодіод вимкнений");
+        fail(409,
+             "Перегляд недоступний під час запуску, нічної тиші або коли світлодіод вимкнений");
         return;
     }
     sendJson(202, "{\"preview\":true}");

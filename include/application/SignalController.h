@@ -13,7 +13,8 @@ public:
     static constexpr uint32_t CONNECT_PULSE_MS = 100;
     static constexpr uint32_t CONNECTED_PULSE_MS = 500;
     static constexpr uint32_t LED_PHASE_MS = 500;
-    SignalController(SignalOutput& output, ButtonPort& button) : output(output), button(button) {}
+    SignalController(SignalOutput& output, ButtonPort& button, TimePort& time)
+        : output(output), button(button), time(time) {}
     void begin();
     void onEvent(const Event& event) override;
     void update(uint32_t now);
@@ -27,6 +28,7 @@ public:
     bool startupFinished() const {
         return !startupWindow && active != Pattern::STARTUP && requested != Pattern::STARTUP;
     }
+    bool quietHoursActive() const;
     enum class Preview { STARTUP, CONNECTING, CONNECTED, LED };
     bool startPreview(Preview kind, LedMode mode, uint32_t now);
 
@@ -34,8 +36,10 @@ private:
     enum class Pattern { NONE, STARTUP, CONNECTING, CONNECTED };
     void request(Pattern pattern);
     void stop();
+    bool quietNow() const;
     SignalOutput& output;
     ButtonPort& button;
+    TimePort& time;
     Pattern active = Pattern::NONE;
     Pattern requested = Pattern::NONE;
     uint32_t patternStarted = 0;

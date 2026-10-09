@@ -24,12 +24,12 @@ BuzzerActuator buzzer(BUZZER_PIN);
 GpioSignals outputs(led, buzzer);
 GpioButton button(BUTTON_PIN);
 ArduinoClock monotonicClock;
-SignalController signals(outputs, button);
+NetworkTime networkTime;
+SignalController signals(outputs, button, networkTime);
 SerialObserver serial;
 WiFiManager wifi(settings.ssid, settings.wifiPassword, settings.ip, settings.gateway,
                  settings.subnet);
 ConnectionService connection(wifi, events);
-NetworkTime networkTime;
 TimeService timeService(networkTime, events);
 TelegramTransport telegram(startupToken);
 NotificationService notifications(telegram, events, monotonicClock);

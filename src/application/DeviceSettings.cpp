@@ -50,6 +50,8 @@ bool validTelegramSettings(const DeviceSettings& settings) {
 
 bool validSignalSettings(const DeviceSettings& settings) {
     return settings.startupSoundSeconds >= 1 && settings.startupSoundSeconds <= 60 &&
+           settings.quietStartHour <= 23 && settings.quietEndHour <= 23 &&
+           (!settings.quietHoursEnabled || settings.quietStartHour != settings.quietEndHour) &&
            validMode(settings.startupLed) && validMode(settings.connectingLed) &&
            validMode(settings.waitingLed) && validMode(settings.idleLed) &&
            validMode(settings.errorLed);

@@ -5,6 +5,23 @@ void SignalController::begin() {
     output.setBuzzer(false);
 }
 
+bool SignalController::quietNow() const {
+    if (settings == nullptr || !settings->quietHoursEnabled) {
+        return false;
+    }
+    uint8_t hour = 0;
+    if (!time.localHour(hour) || hour > 23) {
+        return true;
+    }
+    const uint8_t start = settings->quietStartHour;
+    const uint8_t end = settings->quietEndHour;
+    return start < end ? hour >= start && hour < end : hour >= start || hour < end;
+}
+
+bool SignalController::quietHoursActive() const {
+    return quietNow();
+}
+
 void SignalController::request(Pattern pattern) {
     // Startup has priority. While it plays, coalesce connectivity into one pending pattern.
     if (active == Pattern::STARTUP && pattern != Pattern::STARTUP) {
@@ -60,7 +77,7 @@ void SignalController::onEvent(const Event& event) {
 
 bool SignalController::startPreview(Preview kind, LedMode mode, uint32_t now) {
     if (settings == nullptr || !startupFinished() ||
-        (kind == Preview::LED && !settings->ledEnabled)) {
+        (kind == Preview::LED && !settings->ledEnabled) || (kind != Preview::LED && quietNow())) {
         return false;
     }
     previewKind = kind;
@@ -78,6 +95,12 @@ void SignalController::stop() {
 }
 
 void SignalController::update(uint32_t now) {
+    if (quietNow()) {
+        if (previewActive && previewKind != Preview::LED) {
+            previewActive = false;
+        }
+        stop();
+    }
     if (settings != nullptr) {
         if (startupWindow && !startupLedStartedFlag) {
             startupLedStarted = now;

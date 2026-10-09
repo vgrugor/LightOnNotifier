@@ -99,12 +99,20 @@ public:
 class FakeTime : public TimePort {
 public:
     bool valid = false;
+    uint8_t hour = 0;
     unsigned starts = 0;
     void startSynchronization() override {
         ++starts;
     }
     bool isValid() const override {
         return valid;
+    }
+    bool localHour(uint8_t& result) const override {
+        if (!valid) {
+            return false;
+        }
+        result = hour;
+        return true;
     }
 };
 
@@ -697,7 +705,8 @@ void test_notification_retry_and_send_gap_start_after_blocking_send_completes() 
 void test_signal_startup_is_requested_without_io_and_finishes_at_boundary() {
     FakeOutput output;
     FakeButton button;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.begin();
     service.onEvent(Event(EventType::LIGHT_ON));
     TEST_ASSERT_FALSE(output.buzzer);
@@ -715,7 +724,8 @@ void test_signal_uses_saved_startup_duration_across_tick_wrap_without_shortening
     FakeButton button;
     DeviceSettings settings;
     settings.startupSoundSeconds = 3;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.setSettings(settings);
     service.begin();
     service.onEvent(Event(EventType::LIGHT_ON));
@@ -735,7 +745,8 @@ void test_signal_uses_saved_startup_duration_across_tick_wrap_without_shortening
 void test_signal_button_preheld_and_pressed_during_pattern_cancel_without_restarting() {
     FakeOutput output;
     FakeButton button;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.begin();
     button.pressed = true;
     service.onEvent(Event(EventType::LIGHT_ON));
@@ -759,7 +770,8 @@ void test_signal_button_preheld_and_pressed_during_pattern_cancel_without_restar
 void test_signal_connecting_pulse_and_connected_two_pulses_match_boundaries() {
     FakeOutput output;
     FakeButton button;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.begin();
     service.onEvent(Event(EventType::WIFI_START_CONNECT));
     service.onEvent(Event(EventType::WIFI_TRY_CONNECT));
@@ -792,7 +804,8 @@ void test_signal_connecting_pulse_and_connected_two_pulses_match_boundaries() {
 void test_signal_startup_has_priority_and_pending_connected_supersedes_connecting() {
     FakeOutput output;
     FakeButton button;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.begin();
     service.onEvent(Event(EventType::LIGHT_ON));
     service.update(0);
@@ -814,7 +827,8 @@ void test_signal_startup_has_priority_and_pending_connected_supersedes_connectin
 void test_signal_delivery_led_blinks_then_keeps_final_on_state() {
     FakeOutput output;
     FakeButton button;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.begin();
     service.onEvent(Event(EventType::WIFI_CONNECTED));
     service.update(0);
@@ -840,7 +854,8 @@ void test_signal_delivery_led_blinks_then_keeps_final_on_state() {
 void test_signal_startup_and_delivery_blink_survive_millis_rollover() {
     FakeOutput output;
     FakeButton button;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.begin();
     const uint32_t start = UINT32_MAX - SignalController::LED_PHASE_MS / 2;
     service.onEvent(Event(EventType::LIGHT_ON));
@@ -869,7 +884,8 @@ void test_configured_signal_modes_follow_startup_waiting_and_idle_boundaries() {
     settings.startupLed = LedMode::BLINK;
     settings.waitingLed = LedMode::OFF;
     settings.idleLed = LedMode::OFF;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.setSettings(settings);
     service.begin();
     const uint32_t start = UINT32_MAX - 100;
@@ -902,7 +918,8 @@ void test_configured_signal_switches_cancel_active_sound_and_global_led() {
     FakeOutput output;
     FakeButton button;
     DeviceSettings settings;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.setSettings(settings);
     service.begin();
     service.onEvent(Event(EventType::LIGHT_ON));
@@ -930,7 +947,8 @@ void test_disabling_startup_sound_preserves_enabled_pending_wifi_success() {
     FakeOutput output;
     FakeButton button;
     DeviceSettings settings;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.setSettings(settings);
     service.begin();
     service.onEvent(Event(EventType::LIGHT_ON));
@@ -949,7 +967,8 @@ void test_configured_preview_respects_led_off_and_button_and_expires() {
     DeviceSettings settings;
     settings.startupSound = false;
     settings.ledEnabled = false;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.setSettings(settings);
     service.begin();
     service.onEvent(Event(EventType::LIGHT_ON));
@@ -982,7 +1001,8 @@ void test_wifi_transition_cancels_active_sound_preview() {
     FakeButton button;
     DeviceSettings settings;
     settings.startupSound = false;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.setSettings(settings);
     service.begin();
     service.onEvent(Event(EventType::LIGHT_ON));
@@ -994,6 +1014,93 @@ void test_wifi_transition_cancels_active_sound_preview() {
     TEST_ASSERT_TRUE(output.buzzer);
     service.onEvent(Event(EventType::WIFI_RECONNECT));
     service.update(SignalController::STARTUP_MS + 2);
+    TEST_ASSERT_FALSE(output.buzzer);
+}
+
+void test_quiet_hours_cover_daytime_overnight_and_unknown_time() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+
+    TEST_ASSERT_TRUE(service.quietHoursActive());
+    wallTime.valid = true;
+    for (const uint8_t hour : {21, 7, 12}) {
+        wallTime.hour = hour;
+        TEST_ASSERT_FALSE(service.quietHoursActive());
+    }
+    for (const uint8_t hour : {22, 23, 0, 6}) {
+        wallTime.hour = hour;
+        TEST_ASSERT_TRUE(service.quietHoursActive());
+    }
+    settings.quietStartHour = 9;
+    settings.quietEndHour = 17;
+    for (const uint8_t hour : {8, 17, 23}) {
+        wallTime.hour = hour;
+        TEST_ASSERT_FALSE(service.quietHoursActive());
+    }
+    for (const uint8_t hour : {9, 12, 16}) {
+        wallTime.hour = hour;
+        TEST_ASSERT_TRUE(service.quietHoursActive());
+    }
+    settings.quietHoursEnabled = false;
+    wallTime.valid = false;
+    TEST_ASSERT_FALSE(service.quietHoursActive());
+}
+
+void test_quiet_hours_stop_active_sound_without_replay_and_block_sound_preview() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    wallTime.valid = true;
+    wallTime.hour = 21;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    TEST_ASSERT_TRUE(output.buzzer);
+    TEST_ASSERT_TRUE(output.led);
+
+    wallTime.hour = 22;
+    service.update(500);
+    TEST_ASSERT_FALSE(output.buzzer);
+    service.update(SignalController::STARTUP_MS);
+    TEST_ASSERT_FALSE(service.startPreview(SignalController::Preview::STARTUP, LedMode::OFF,
+                                           SignalController::STARTUP_MS));
+    TEST_ASSERT_TRUE(service.startPreview(SignalController::Preview::LED, LedMode::BLINK,
+                                          SignalController::STARTUP_MS));
+
+    wallTime.hour = 7;
+    service.update(SignalController::STARTUP_MS + 1);
+    TEST_ASSERT_FALSE(output.buzzer);
+    service.onEvent(Event(EventType::WIFI_CONNECTED));
+    service.update(SignalController::STARTUP_MS + 2);
+    service.update(SignalController::STARTUP_MS + 2 + SignalController::CONNECTED_PULSE_MS);
+    TEST_ASSERT_TRUE(output.buzzer);
+}
+
+void test_quiet_hours_mute_startup_until_clock_is_ready_without_affecting_led() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    TEST_ASSERT_FALSE(output.buzzer);
+    TEST_ASSERT_TRUE(output.led);
+    wallTime.valid = true;
+    wallTime.hour = 12;
+    service.update(1);
     TEST_ASSERT_FALSE(output.buzzer);
 }
 
@@ -1017,6 +1124,14 @@ void test_device_settings_validate_network_telegram_and_signal_modes() {
     settings.startupSoundSeconds = 61;
     TEST_ASSERT_FALSE(validSignalSettings(settings));
     settings.startupSoundSeconds = 10;
+    settings.quietHoursEnabled = true;
+    settings.quietStartHour = 24;
+    TEST_ASSERT_FALSE(validSignalSettings(settings));
+    settings.quietStartHour = 22;
+    settings.quietEndHour = 22;
+    TEST_ASSERT_FALSE(validSignalSettings(settings));
+    settings.quietEndHour = 7;
+    TEST_ASSERT_TRUE(validSignalSettings(settings));
     settings.startupLed = static_cast<LedMode>(3);
     TEST_ASSERT_FALSE(validSignalSettings(settings));
     settings.startupLed = LedMode::STEADY;
@@ -1039,7 +1154,7 @@ void test_application_services_ota_during_startup_and_missing_ntp_then_delivers(
     TimeService time(clock, events);
     FakeClock monotonicClock;
     NotificationService notifications(sender, events, monotonicClock);
-    SignalController signals(output, button);
+    SignalController signals(output, button, clock);
     TEST_ASSERT_TRUE(events.addObserver(&signals));
     NotifierApplication app(connection, time, notifications, signals, ota, events);
     const char* recipients[] = {"101"};
@@ -1090,7 +1205,7 @@ void test_application_missing_wifi_still_finishes_signals_and_retries_without_se
     TimeService time(clock, events);
     FakeClock monotonicClock;
     NotificationService notifications(sender, events, monotonicClock);
-    SignalController signals(output, button);
+    SignalController signals(output, button, clock);
     TEST_ASSERT_TRUE(events.addObserver(&signals));
     NotifierApplication app(connection, time, notifications, signals, ota, events);
     const char* recipients[] = {"101"};
@@ -1516,6 +1631,9 @@ void test_settings_store_migrates_version_one_without_losing_saved_configuration
     TEST_ASSERT_TRUE(store.load(loaded));
     TEST_ASSERT_EQUAL_UINT32(DeviceSettings::SCHEMA, loaded.schema);
     TEST_ASSERT_EQUAL_UINT32(10, loaded.startupSoundSeconds);
+    TEST_ASSERT_FALSE(loaded.quietHoursEnabled);
+    TEST_ASSERT_EQUAL_UINT8(22, loaded.quietStartHour);
+    TEST_ASSERT_EQUAL_UINT8(7, loaded.quietEndHour);
     TEST_ASSERT_EQUAL_STRING(oldSettings.ssid, loaded.ssid);
     TEST_ASSERT_EQUAL_STRING(oldSettings.message, loaded.message);
     loaded.revision = 2;
@@ -1528,6 +1646,46 @@ void test_settings_store_migrates_version_one_without_losing_saved_configuration
     TEST_ASSERT_TRUE(reboot.load(reloaded));
     TEST_ASSERT_EQUAL_UINT32(25, reloaded.startupSoundSeconds);
     TEST_ASSERT_EQUAL_STRING(oldSettings.ssid, reloaded.ssid);
+}
+
+void test_settings_store_migrates_version_two_with_quiet_hours_disabled() {
+    resetFakeStorage();
+    DeviceSettings oldSettings = validStoredSettings();
+    oldSettings.schema = 2;
+    oldSettings.startupSoundSeconds = 25;
+    constexpr size_t oldSize = 1136;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(&oldSettings);
+    uint32_t checksum = 2166136261UL;
+    for (size_t i = 0; i < oldSize; ++i) {
+        checksum = (checksum ^ bytes[i]) * 16777619UL;
+    }
+    const uint32_t header[] = {0x4c4f4e31, oldSize, checksum};
+    auto& file = LittleFS.files["/settings-a.bin"];
+    file.resize(sizeof(header) + oldSize);
+    memcpy(file.data(), header, sizeof(header));
+    memcpy(file.data() + sizeof(header), bytes, oldSize);
+
+    SettingsStore store;
+    TEST_ASSERT_TRUE(store.begin());
+    DeviceSettings loaded;
+    TEST_ASSERT_TRUE(store.load(loaded));
+    TEST_ASSERT_EQUAL_UINT32(DeviceSettings::SCHEMA, loaded.schema);
+    TEST_ASSERT_EQUAL_UINT32(25, loaded.startupSoundSeconds);
+    TEST_ASSERT_FALSE(loaded.quietHoursEnabled);
+    TEST_ASSERT_EQUAL_UINT8(22, loaded.quietStartHour);
+    TEST_ASSERT_EQUAL_UINT8(7, loaded.quietEndHour);
+    TEST_ASSERT_EQUAL_UINT(sizeof(header) + oldSize, file.size());
+
+    loaded.revision = 2;
+    loaded.quietHoursEnabled = true;
+    TEST_ASSERT_TRUE(store.save(loaded));
+    SettingsStore reboot;
+    TEST_ASSERT_TRUE(reboot.begin());
+    DeviceSettings reloaded;
+    TEST_ASSERT_TRUE(reboot.load(reloaded));
+    TEST_ASSERT_TRUE(reloaded.quietHoursEnabled);
+    TEST_ASSERT_EQUAL_UINT8(22, reloaded.quietStartHour);
+    TEST_ASSERT_EQUAL_UINT8(7, reloaded.quietEndHour);
 }
 
 } // namespace
@@ -1570,6 +1728,9 @@ int main() {
     RUN_TEST(test_disabling_startup_sound_preserves_enabled_pending_wifi_success);
     RUN_TEST(test_configured_preview_respects_led_off_and_button_and_expires);
     RUN_TEST(test_wifi_transition_cancels_active_sound_preview);
+    RUN_TEST(test_quiet_hours_cover_daytime_overnight_and_unknown_time);
+    RUN_TEST(test_quiet_hours_stop_active_sound_without_replay_and_block_sound_preview);
+    RUN_TEST(test_quiet_hours_mute_startup_until_clock_is_ready_without_affecting_led);
     RUN_TEST(test_device_settings_validate_network_telegram_and_signal_modes);
     RUN_TEST(test_application_services_ota_during_startup_and_missing_ntp_then_delivers);
     RUN_TEST(test_application_missing_wifi_still_finishes_signals_and_retries_without_sending);
@@ -1590,5 +1751,6 @@ int main() {
     RUN_TEST(test_settings_store_rejects_future_schema_until_explicit_reset);
     RUN_TEST(test_settings_store_requires_durable_provisioning_marker_before_first_record);
     RUN_TEST(test_settings_store_migrates_version_one_without_losing_saved_configuration);
+    RUN_TEST(test_settings_store_migrates_version_two_with_quiet_hours_disabled);
     return UNITY_END();
 }

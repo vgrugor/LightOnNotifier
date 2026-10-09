@@ -14,11 +14,14 @@ constexpr uint32_t MAGIC = 0x4c4f4e31;
 constexpr uint32_t PROVISIONED_MARKER = 0x4c4f4e50;
 constexpr uint32_t LEGACY_SCHEMA = 1;
 constexpr size_t LEGACY_SETTINGS_SIZE = 1132;
+constexpr uint32_t PREVIOUS_SCHEMA = 2;
+constexpr size_t PREVIOUS_SETTINGS_SIZE = offsetof(DeviceSettings, quietHoursEnabled);
 const char* const SLOT_PATHS[2] = {"/settings-a.bin", "/settings-b.bin"};
 constexpr char TEMP_PATH[] = "/settings.tmp";
 
 static_assert(offsetof(DeviceSettings, startupSoundSeconds) == LEGACY_SETTINGS_SIZE,
               "The version-one settings layout changed");
+static_assert(PREVIOUS_SETTINGS_SIZE == 1136, "The version-two settings layout changed");
 
 struct Record {
     uint32_t magic;
@@ -46,7 +49,8 @@ bool readSlot(int slot, Record& record) {
     if (!file || file.size() < HEADER_SIZE ||
         file.read(reinterpret_cast<uint8_t*>(&record), HEADER_SIZE) != HEADER_SIZE ||
         record.magic != MAGIC ||
-        (record.length != sizeof(DeviceSettings) && record.length != LEGACY_SETTINGS_SIZE) ||
+        (record.length != sizeof(DeviceSettings) && record.length != LEGACY_SETTINGS_SIZE &&
+         record.length != PREVIOUS_SETTINGS_SIZE) ||
         file.size() != HEADER_SIZE + record.length ||
         static_cast<size_t>(file.read(reinterpret_cast<uint8_t*>(&record.data), record.length)) !=
             record.length ||
@@ -57,6 +61,14 @@ bool readSlot(int slot, Record& record) {
     if (record.length == LEGACY_SETTINGS_SIZE && record.data.schema == LEGACY_SCHEMA) {
         record.data.schema = DeviceSettings::SCHEMA;
         record.data.startupSoundSeconds = 10;
+        record.data.quietHoursEnabled = false;
+        record.data.quietStartHour = 22;
+        record.data.quietEndHour = 7;
+    } else if (record.length == PREVIOUS_SETTINGS_SIZE && record.data.schema == PREVIOUS_SCHEMA) {
+        record.data.schema = DeviceSettings::SCHEMA;
+        record.data.quietHoursEnabled = false;
+        record.data.quietStartHour = 22;
+        record.data.quietEndHour = 7;
     } else if (record.length != sizeof(DeviceSettings) ||
                record.data.schema != DeviceSettings::SCHEMA) {
         return false;
