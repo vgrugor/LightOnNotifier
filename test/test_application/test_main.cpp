@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <stdint.h>
 #include <string.h>
 #include <string>
@@ -16,6 +17,7 @@
 #include "infrastructure/settings/SettingsStore.h"
 #include "infrastructure/telegram/HttpResponse.h"
 #include "infrastructure/telegram/TelegramAcknowledgement.h"
+#include "infrastructure/telegram/TelegramConnection.h"
 #include "infrastructure/web/BoundedField.h"
 #include "presentation/EventNotifier.h"
 
@@ -1240,6 +1242,93 @@ void test_telegram_acknowledgement_filters_maximum_escaped_message_and_chat_meta
     TEST_ASSERT_EQUAL_UINT(body.size(), response.bodySize());
 }
 
+class FakeTelegramConnection : public TelegramConnectPort {
+public:
+    bool dnsOk = true;
+    bool tcpOk = true;
+    bool handshakeOk = true;
+    bool mflnOk = true;
+    int error = 0;
+    std::vector<std::string> calls;
+
+    bool resolve(const char* host, uint32_t timeoutMs) override {
+        calls.push_back(std::string("dns:") + host + ":" + std::to_string(timeoutMs));
+        return dnsOk;
+    }
+    void setIoTimeout(uint32_t timeoutMs) override {
+        calls.push_back("timeout:" + std::to_string(timeoutMs));
+    }
+    bool connectTcp() override {
+        calls.push_back("tcp");
+        return tcpOk;
+    }
+    bool handshake(const char* host) override {
+        calls.push_back(std::string("tls:") + host);
+        return handshakeOk;
+    }
+    int handshakeError() override {
+        calls.push_back("tls-error");
+        return error;
+    }
+    bool mflnAccepted() override {
+        calls.push_back("mfln");
+        return mflnOk;
+    }
+    void close() override {
+        calls.push_back("close");
+    }
+};
+
+void test_telegram_tls_requires_mfln_and_closes_rejected_connection() {
+    FakeTelegramConnection client;
+    const auto result = connectTelegram(client, "api.telegram.org", 1000, 1000, 1000);
+    TEST_ASSERT_TRUE(result.connected());
+    TEST_ASSERT_EQUAL_INT(0, result.tlsError);
+    const std::vector<std::string> expected = {
+        "dns:api.telegram.org:1000", "timeout:1000", "tcp",
+        "tls:api.telegram.org",      "mfln",         "timeout:1000"};
+    TEST_ASSERT_TRUE(client.calls == expected);
+
+    client.calls.clear();
+    client.mflnOk = false;
+    const auto rejected = connectTelegram(client, "api.telegram.org", 1000, 1000, 1000);
+    TEST_ASSERT_FALSE(rejected.connected());
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TelegramConnectFailure::TLS_FRAGMENT),
+                          static_cast<int>(rejected.failure));
+    TEST_ASSERT_EQUAL_STRING("close", client.calls.back().c_str());
+}
+
+void test_telegram_tls_allocation_failure_closes_socket_and_preserves_error() {
+    FakeTelegramConnection client;
+    client.handshakeOk = false;
+    client.error = -1000;
+    const auto result = connectTelegram(client, "api.telegram.org", 1000, 1000, 1000);
+    TEST_ASSERT_FALSE(result.connected());
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TelegramConnectFailure::TLS),
+                          static_cast<int>(result.failure));
+    TEST_ASSERT_EQUAL_INT(-1000, result.tlsError);
+    TEST_ASSERT_EQUAL_STRING("close", client.calls.back().c_str());
+    TEST_ASSERT_TRUE(std::find(client.calls.begin(), client.calls.end(), "mfln") ==
+                     client.calls.end());
+}
+
+void test_telegram_dns_and_tcp_fail_before_tls() {
+    FakeTelegramConnection client;
+    client.dnsOk = false;
+    const auto dns = connectTelegram(client, "api.telegram.org", 1000, 1000, 1000);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TelegramConnectFailure::DNS),
+                          static_cast<int>(dns.failure));
+    TEST_ASSERT_EQUAL_UINT(1, client.calls.size());
+
+    client.calls.clear();
+    client.dnsOk = true;
+    client.tcpOk = false;
+    const auto tcp = connectTelegram(client, "api.telegram.org", 1000, 1000, 1000);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TelegramConnectFailure::TCP),
+                          static_cast<int>(tcp.failure));
+    TEST_ASSERT_EQUAL_STRING("tcp", client.calls.back().c_str());
+}
+
 void test_static_network_parses_valid_addresses_and_contiguous_subnet() {
     StaticNetworkConfig result = {};
     TEST_ASSERT_TRUE(parseStaticNetwork("192.168.1.20", "192.168.1.1", "255.255.255.0", result));
@@ -1490,6 +1579,9 @@ int main() {
     RUN_TEST(test_http_total_buffer_boundary_accepts_exact_capacity_and_rejects_overflow);
     RUN_TEST(test_telegram_acknowledgement_requires_boolean_true_and_rejects_invalid_json);
     RUN_TEST(test_telegram_acknowledgement_filters_maximum_escaped_message_and_chat_metadata);
+    RUN_TEST(test_telegram_tls_requires_mfln_and_closes_rejected_connection);
+    RUN_TEST(test_telegram_tls_allocation_failure_closes_socket_and_preserves_error);
+    RUN_TEST(test_telegram_dns_and_tcp_fail_before_tls);
     RUN_TEST(test_static_network_parses_valid_addresses_and_contiguous_subnet);
     RUN_TEST(test_static_network_rejects_invalid_settings_atomically_without_dhcp_fallback);
     RUN_TEST(test_notification_rejects_noncanonical_numeric_ids_and_duplicate_channel_names);

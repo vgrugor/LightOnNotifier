@@ -50,7 +50,8 @@ must never depend on live Wi-Fi, Telegram, a physical board, real waits, or test
 Cover interval boundaries and `uint32_t` wraparound when changing timed behavior.
 The native source filter compiles `application/*.cpp`, `presentation/EventNotifier.cpp`,
 `infrastructure/telegram/HttpResponse.cpp`, `infrastructure/telegram/TelegramAcknowledgement.cpp`,
-and `infrastructure/settings/SettingsStore.cpp` with fake LittleFS/EEPROM headers.
+`infrastructure/telegram/TelegramConnection.cpp`, and `infrastructure/settings/SettingsStore.cpp`
+with fake LittleFS/EEPROM headers.
 HTTP framing and filtered acknowledgment parsing are actual production code, tested with
 the firmware's pinned ArduinoJson 7.4.2 revision and Unity 2.6.1.
 

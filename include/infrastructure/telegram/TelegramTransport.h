@@ -4,14 +4,21 @@
 #include <WiFiClientSecureBearSSL.h>
 
 #include "application/Ports.h"
+#include "infrastructure/telegram/TelegramConnection.h"
 
 // Uses the pinned framework's protected TLS entry point to preserve hostname validation
 // after explicitly bounded DNS/TCP stages. Review this boundary when updating the framework.
-class BoundedSecureClient : public BearSSL::WiFiClientSecureCtx {
+class BoundedSecureClient : public BearSSL::WiFiClientSecureCtx, public TelegramConnectPort {
 public:
-    enum class Failure { NONE, DNS, TCP, TLS, TLS_FRAGMENT };
     bool connectHost(const char* host);
-    Failure failure() const {
+    bool resolve(const char* host, uint32_t timeoutMs) override;
+    void setIoTimeout(uint32_t timeoutMs) override;
+    bool connectTcp() override;
+    bool handshake(const char* host) override;
+    bool mflnAccepted() override;
+    int handshakeError() override;
+    void close() override;
+    TelegramConnectFailure failure() const {
         return lastFailure;
     }
     int tlsError() const {
@@ -19,7 +26,8 @@ public:
     }
 
 private:
-    Failure lastFailure = Failure::NONE;
+    IPAddress resolvedAddress;
+    TelegramConnectFailure lastFailure = TelegramConnectFailure::NONE;
     int lastTlsError = 0;
 };
 

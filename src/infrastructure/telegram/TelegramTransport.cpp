@@ -29,34 +29,41 @@ bool failure(const char* stage, int detail = 0) {
 } // namespace
 
 bool BoundedSecureClient::connectHost(const char* host) {
-    lastFailure = Failure::NONE;
-    lastTlsError = 0;
-    IPAddress address;
-    if (!WiFi.hostByName(host, address, DNS_TIMEOUT_MS)) {
-        lastFailure = Failure::DNS;
-        return false;
-    }
-    setTimeout(CONNECT_TIMEOUT_MS);
-    if (!WiFiClient::connect(address, 443)) {
-        lastFailure = Failure::TCP;
-        return false;
-    }
+    const auto result =
+        connectTelegram(*this, host, DNS_TIMEOUT_MS, CONNECT_TIMEOUT_MS, IO_TIMEOUT_MS);
+    lastFailure = result.failure;
+    lastTlsError = result.tlsError;
+    return result.connected();
+}
+
+bool BoundedSecureClient::resolve(const char* host, uint32_t timeoutMs) {
+    return WiFi.hostByName(host, resolvedAddress, timeoutMs);
+}
+
+void BoundedSecureClient::setIoTimeout(uint32_t timeoutMs) {
+    setTimeout(timeoutMs);
+}
+
+bool BoundedSecureClient::connectTcp() {
+    return WiFiClient::connect(resolvedAddress, 443);
+}
+
+bool BoundedSecureClient::handshake(const char* host) {
     // The pinned core resets TLS handshake timeout to 15000 ms internally.
-    bool connected = _connectSSL(host);
-    if (!connected) {
-        lastFailure = Failure::TLS;
-        lastTlsError = getLastSSLError();
-    } else if (!getMFLNStatus()) {
-        // A 4 KiB receive buffer is safe only when the peer accepts MFLN.
-        lastFailure = Failure::TLS_FRAGMENT;
-        connected = false;
-    }
-    // Core 3.1.2 resets its timeout to 5000 after a successful handshake.
-    setTimeout(IO_TIMEOUT_MS);
-    if (!connected) {
-        stop(CLOSE_ACK_MS);
-    }
-    return connected;
+    return _connectSSL(host);
+}
+
+bool BoundedSecureClient::mflnAccepted() {
+    // A 4 KiB receive buffer is safe only when the peer accepts MFLN.
+    return getMFLNStatus();
+}
+
+int BoundedSecureClient::handshakeError() {
+    return getLastSSLError();
+}
+
+void BoundedSecureClient::close() {
+    stop(CLOSE_ACK_MS);
 }
 
 TelegramTransport::TelegramTransport(const char* token)
@@ -126,15 +133,15 @@ bool TelegramTransport::send(const char* recipient, const char* message) {
     client.setBufferSizes(TLS_RECEIVE_BYTES, TLS_TRANSMIT_BYTES);
     if (!client.connectHost(HOST)) {
         switch (client.failure()) {
-        case BoundedSecureClient::Failure::DNS:
+        case TelegramConnectFailure::DNS:
             return failure("DNS");
-        case BoundedSecureClient::Failure::TCP:
+        case TelegramConnectFailure::TCP:
             return failure("TCP");
-        case BoundedSecureClient::Failure::TLS:
+        case TelegramConnectFailure::TLS:
             return failure("TLS", client.tlsError());
-        case BoundedSecureClient::Failure::TLS_FRAGMENT:
+        case TelegramConnectFailure::TLS_FRAGMENT:
             return failure("TLS fragment negotiation");
-        case BoundedSecureClient::Failure::NONE:
+        case TelegramConnectFailure::NONE:
             return failure("connection");
         }
         return failure("connection");
