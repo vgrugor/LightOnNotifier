@@ -294,9 +294,12 @@ and its assets are embedded in firmware; there is no separately flashed filesyst
 The fixed notification message/recipient buffers use approximately 1 KiB of static RAM.
 Each transport attempt allocates an 8 KiB response buffer plus a terminator on the heap
 with checked allocation failure. The JSON body is limited to 3200 bytes and the complete
-request uses roughly 4 KiB; JSON and TLS buffers add separate allocations. BearSSL alone
-uses a 16 KiB receive and 4 KiB transmit buffer, with roughly 24 KiB total TLS memory. These are memory assumptions,
-not measured peak heap use on the target. Result JSON filtering retains only `ok`.
+request uses roughly 4 KiB; JSON and TLS buffers add separate allocations. BearSSL uses
+4 KiB receive and 4 KiB transmit buffers. Telegram must negotiate 4 KiB MFLN; otherwise
+the attempt fails and the serial log identifies the negotiation failure. A 16 KiB receive
+buffer exhausted TLS heap on the deployed ESP8266, while the 4 KiB configuration completed
+both startup sends. Peak heap under concurrent web/TLS use remains unmeasured. Result JSON
+filtering retains only `ok`.
 
 The 512-byte message limit permits up to 3072 bytes of JSON-escaped text. The 8 KiB response
 limit accommodates ordinary echoed-message metadata, but unusually large metadata can

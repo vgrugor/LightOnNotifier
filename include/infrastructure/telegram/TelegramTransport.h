@@ -9,7 +9,18 @@
 // after explicitly bounded DNS/TCP stages. Review this boundary when updating the framework.
 class BoundedSecureClient : public BearSSL::WiFiClientSecureCtx {
 public:
+    enum class Failure { NONE, DNS, TCP, TLS, TLS_FRAGMENT };
     bool connectHost(const char* host);
+    Failure failure() const {
+        return lastFailure;
+    }
+    int tlsError() const {
+        return lastTlsError;
+    }
+
+private:
+    Failure lastFailure = Failure::NONE;
+    int lastTlsError = 0;
 };
 
 class TelegramTransport : public MessageSender {

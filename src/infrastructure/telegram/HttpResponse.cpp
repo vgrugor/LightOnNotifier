@@ -49,7 +49,8 @@ bool HttpResponse::parseHeaders() {
         buffer[11] < '0' || buffer[11] > '9' || (buffer[12] != ' ' && buffer[12] != '\r')) {
         return false;
     }
-    successStatus = buffer[9] == '2' && buffer[10] == '0' && buffer[11] == '0';
+    httpStatus = (buffer[9] - '0') * 100 + (buffer[10] - '0') * 10 + buffer[11] - '0';
+    successStatus = httpStatus == 200;
     char* line = lineEnd + 2;
     while (*line != '\r') {
         lineEnd = strstr(line, "\r\n");

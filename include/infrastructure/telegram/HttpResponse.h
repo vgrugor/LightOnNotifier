@@ -24,6 +24,9 @@ public:
     bool isSuccessStatus() const {
         return successStatus;
     }
+    int statusCode() const {
+        return httpStatus;
+    }
     const char* body() const {
         return buffer ? buffer.get() + bodyOffset : "";
     }
@@ -42,5 +45,6 @@ private:
     bool complete = false;
     bool invalid = false;
     bool successStatus = false;
+    int httpStatus = 0;
 };
 #endif

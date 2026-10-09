@@ -1129,6 +1129,7 @@ void test_http_content_length_completes_without_waiting_for_connection_close() {
     TEST_ASSERT_TRUE(response.isComplete());
     TEST_ASSERT_TRUE(response.isValid());
     TEST_ASSERT_TRUE(response.isSuccessStatus());
+    TEST_ASSERT_EQUAL_INT(200, response.statusCode());
     TEST_ASSERT_EQUAL_UINT(body.size(), response.bodySize());
     TEST_ASSERT_EQUAL_STRING(body.c_str(), response.body());
     TEST_ASSERT_TRUE(isAcknowledged(response));
@@ -1148,6 +1149,7 @@ void test_http_connection_closed_body_and_non_success_status_are_distinguished()
         TEST_ASSERT_TRUE(appendResponse(failure, framedResponse("{\"ok\":true}", status)));
         TEST_ASSERT_TRUE(failure.isValid());
         TEST_ASSERT_FALSE(failure.isSuccessStatus());
+        TEST_ASSERT_EQUAL_INT(status, failure.statusCode());
         TEST_ASSERT_FALSE(isAcknowledged(failure));
     }
 }

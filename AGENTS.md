@@ -138,9 +138,12 @@ must remain valid for their borrowing adapters.
 Fixed message/recipient buffers consume approximately 1 KiB of static RAM. The transport has
 an 8 KiB heap response buffer plus a terminator, allocated per attempt with `nothrow` ownership
 and checked failure. A JSON request body is limited to 3200 bytes, the complete request uses
-roughly 4 KiB, and JSON/TLS allocations are additional. BearSSL has a 16 KiB receive and
-4 KiB transmit buffer and needs roughly 24 KiB total. These estimates require peak-heap validation on the target; keep input
-and response bounds when changing the queue. Result JSON filtering retains only `ok`.
+roughly 4 KiB, and JSON/TLS allocations are additional. BearSSL uses 4 KiB receive and
+4 KiB transmit buffers; the connection requires successful 4 KiB MFLN negotiation with
+Telegram. A 16 KiB receive buffer caused TLS allocation failure (`-1000`) on the deployed
+ESP8266; 4 KiB MFLN completed two startup sends on hardware. Peak heap under concurrent
+web/TLS use still needs validation. Keep input and response bounds when changing the queue.
+Result JSON filtering retains only `ok`.
 
 Each recipient has at most five transport attempts per boot. A failure waits one second
 before another attempt; transport calls have at least a 200 ms global interval. Wi-Fi and
@@ -220,6 +223,8 @@ window plus up to one final second of I/O. Cleanup allows a one-second engine wa
 and scheduling overhead; it is not a measured end-to-end latency guarantee.
 The response collection loop calls `yield()` for framework background work. This does
 not run application services or establish a measured watchdog or responsiveness budget.
+The reduced TLS receive buffer relies on Telegram negotiating 4 KiB MFLN. If it does not,
+the attempt fails with a diagnostic instead of accepting potentially oversized TLS records.
 
 The ESP8266 web server's pre-route hook can inspect complete headers only when they fit in
 the first TCP receive buffer: the framework's `WiFiClient::peekBytes()` does not copy across
