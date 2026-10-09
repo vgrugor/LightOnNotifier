@@ -24,7 +24,7 @@ bool validSetupSecret(const char* value) {
         return false;
     }
     const size_t length = strlen(value);
-    if (length < 12 || length > 63) {
+    if (length < 10 || length > 63) {
         return false;
     }
     for (size_t i = 0; i < length; ++i) {

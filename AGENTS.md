@@ -186,7 +186,7 @@ buzzer driver. OTA is a trusted-LAN interface; configure an authentication passw
 do not expose it to the public internet. Initial tokens, passwords, static addresses, and
 chat IDs belong only in ignored local configuration; web edits are persisted in LittleFS.
 Test/CI fixtures contain placeholders only.
-Provision a unique printable-ASCII `SETUP_PASSWORD` of 12–63 bytes per device in ignored local
+Provision a unique printable-ASCII `SETUP_PASSWORD` of 10–63 bytes per device in ignored local
 configuration.
 The tracked example value is rejected at runtime. The setup access point uses that secret;
 the web login accepts it before administrator setup and during physical recovery. The

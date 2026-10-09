@@ -87,7 +87,7 @@ corepack prepare pnpm@11.25.0 --activate
 | `WIFI_SSID`, `WIFI_PASSWORD` | Access point credentials. |
 | `WIFI_IP`, `WIFI_GATEWAY`, `WIFI_SUBNET` | Valid IPv4 static address, gateway, and subnet. |
 | `OTA_HOSTNAME`, `OTA_PASSWORD` | Local OTA hostname and update authentication. |
-| `SETUP_PASSWORD` | Unique 12–63-byte printable ASCII initial and recovery secret for this device; also protects its setup access point. |
+| `SETUP_PASSWORD` | Unique 10–63-byte printable ASCII initial and recovery secret for this device; also protects its setup access point. |
 | `EXTERNAL_LED_PIN`, `BUZZER_PIN`, `BUTTON_PIN` | Local peripheral pin assignments. |
 | `BOARD_LED_PIN` | Compatibility setting; the board LED is currently unused. |
 | `BOT_TOKEN` | Telegram bot token. |
@@ -267,7 +267,7 @@ changing firmware versions, because an older firmware may not understand the sto
   work is not automatically reset until reboot.
 - If the buzzer or button behaves incorrectly, check polarity, grounding, and the D3 boot constraint.
 - If web setup is unavailable, check `SETUP_PASSWORD`: the example value and values outside
-  12–63 bytes cannot open the access point. Hold the button for five seconds only after boot
+  10–63 bytes cannot open the access point. Hold the button for five seconds only after boot
   to enter recovery; its SSID is `LightOn-XXXXXX` at `192.168.4.1`.
 - If Wi-Fi changes are not confirmed from the new station address within 120 seconds, the
   previous network settings return automatically. Refresh the browser at the old address.
