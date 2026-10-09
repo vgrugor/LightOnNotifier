@@ -614,8 +614,8 @@ void WebPortal::changePassword() {
         return;
     }
     const String password = server.arg("password");
-    if (password.length() < 12 || password.length() > 64) {
-        fail(400, "Пароль має містити 12–64 байти");
+    if (password.length() < 10 || password.length() > 64) {
+        fail(400, "Пароль має містити 10–64 байти");
         return;
     }
     DeviceSettings candidate = settings;

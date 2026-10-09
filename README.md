@@ -108,7 +108,7 @@ exists, the device opens a protected setup access point named `LightOn-XXXXXX` w
 `192.168.4.1`; the suffix comes from the ESP8266 chip ID. Connect using `SETUP_PASSWORD`,
 open `http://192.168.4.1/`, and sign in with the same password. Save Telegram settings, then
 apply Wi-Fi settings. Open the proposed station IP address from that network and confirm it
-within 120 seconds. Set an administrator password of 12–64 bytes in the Device section.
+within 120 seconds. Set an administrator password of 10–64 bytes in the Device section.
 Unconfirmed network settings revert automatically. If the stored configuration is unreadable,
 the device enters protected setup rather than silently importing compiled credentials.
 The Wi-Fi change endpoint acknowledges the provisional settings before disconnecting from the
