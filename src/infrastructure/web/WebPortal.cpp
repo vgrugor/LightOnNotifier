@@ -447,7 +447,7 @@ bool WebPortal::checkRevision() {
 }
 
 bool WebPortal::copyField(char* target, size_t capacity, const String& value) {
-    if (value.length() >= capacity || value.indexOf('\0') >= 0) {
+    if (value.length() >= capacity || memchr(value.c_str(), '\0', value.length()) != nullptr) {
         return false;
     }
     memcpy(target, value.c_str(), value.length() + 1);
