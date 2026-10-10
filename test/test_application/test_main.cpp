@@ -1,8 +1,12 @@
+#include <algorithm>
 #include <stdint.h>
 #include <string.h>
 #include <string>
 #include <vector>
 
+#include <Arduino.h>
+#include <EEPROM.h>
+#include <LittleFS.h>
 #include <unity.h>
 
 #include "application/ConnectionService.h"
@@ -11,11 +15,56 @@
 #include "application/SignalController.h"
 #include "application/StaticNetworkConfig.h"
 #include "application/TimeService.h"
+#include "infrastructure/actuators/ExternalLedActuator.h"
+#include "infrastructure/settings/SettingsStore.h"
 #include "infrastructure/telegram/HttpResponse.h"
 #include "infrastructure/telegram/TelegramAcknowledgement.h"
+#include "infrastructure/telegram/TelegramConnection.h"
+#include "infrastructure/web/BoundedField.h"
 #include "presentation/EventNotifier.h"
 
 namespace {
+
+void test_web_field_accepts_valid_wifi_values_and_rejects_oversize_or_embedded_null() {
+    char ssid[33] = {};
+    char password[65] = {};
+    char address[16] = {};
+    TEST_ASSERT_TRUE(copyBoundedField(ssid, sizeof(ssid), "ENERGYzal", 9));
+    TEST_ASSERT_EQUAL_STRING("ENERGYzal", ssid);
+    TEST_ASSERT_TRUE(copyBoundedField(password, sizeof(password), "1234567890", 10));
+    TEST_ASSERT_EQUAL_STRING("1234567890", password);
+    TEST_ASSERT_TRUE(copyBoundedField(address, sizeof(address), "192.168.1.204", 13));
+    TEST_ASSERT_EQUAL_STRING("192.168.1.204", address);
+    TEST_ASSERT_TRUE(copyBoundedField(address, sizeof(address), "255.255.255.0", 13));
+    TEST_ASSERT_EQUAL_STRING("255.255.255.0", address);
+
+    const char maxLength[] = "abcdefghijklmnopqrstuvwxyz123456";
+    TEST_ASSERT_TRUE(copyBoundedField(ssid, sizeof(ssid), maxLength, 32));
+    TEST_ASSERT_EQUAL_STRING(maxLength, ssid);
+    const char tooLong[] = "abcdefghijklmnopqrstuvwxyz1234567";
+    TEST_ASSERT_FALSE(copyBoundedField(ssid, sizeof(ssid), tooLong, 33));
+    TEST_ASSERT_EQUAL_STRING(maxLength, ssid);
+    const char embeddedNull[] = {'E', 'N', '\0', 'X'};
+    TEST_ASSERT_FALSE(copyBoundedField(ssid, sizeof(ssid), embeddedNull, sizeof(embeddedNull)));
+    TEST_ASSERT_EQUAL_STRING(maxLength, ssid);
+}
+
+void test_percentage_input_accepts_bounds_and_rejects_malformed_values_atomically() {
+    uint32_t percent = 17;
+    TEST_ASSERT_TRUE(parsePercentage("0", 1, percent));
+    TEST_ASSERT_EQUAL_UINT32(0, percent);
+    TEST_ASSERT_TRUE(parsePercentage("100", 3, percent));
+    TEST_ASSERT_EQUAL_UINT32(100, percent);
+    const char* invalid[] = {"", "101", "999", "1000", "-1", "+1", "1.5", "10%", " 1", "1 "};
+    for (const char* value : invalid) {
+        TEST_ASSERT_FALSE(parsePercentage(value, strlen(value), percent));
+        TEST_ASSERT_EQUAL_UINT32(100, percent);
+    }
+    TEST_ASSERT_FALSE(parsePercentage(nullptr, 1, percent));
+    const char embeddedNull[] = {'1', '\0', '0'};
+    TEST_ASSERT_FALSE(parsePercentage(embeddedNull, sizeof(embeddedNull), percent));
+    TEST_ASSERT_EQUAL_UINT32(100, percent);
+}
 
 struct RecordedEvent {
     EventType type;
@@ -69,12 +118,20 @@ public:
 class FakeTime : public TimePort {
 public:
     bool valid = false;
+    uint8_t hour = 0;
     unsigned starts = 0;
     void startSynchronization() override {
         ++starts;
     }
     bool isValid() const override {
         return valid;
+    }
+    bool localHour(uint8_t& result) const override {
+        if (!valid) {
+            return false;
+        }
+        result = hour;
+        return true;
     }
 };
 
@@ -112,9 +169,13 @@ public:
 class FakeOutput : public SignalOutput {
 public:
     bool led = false;
+    uint8_t brightness = 0;
+    std::vector<uint8_t> ledWrites;
     bool buzzer = false;
-    void setLed(bool active) override {
-        led = active;
+    void setLedBrightness(uint8_t percent) override {
+        ledWrites.push_back(percent);
+        brightness = percent;
+        led = percent != 0;
     }
     void setBuzzer(bool active) override {
         buzzer = active;
@@ -269,6 +330,28 @@ void test_connection_invalid_configuration_never_starts_or_retries() {
     TEST_ASSERT_EQUAL_UINT(0, port.starts);
     TEST_ASSERT_EQUAL_UINT(0, port.stops);
     TEST_ASSERT_EQUAL_UINT(1, events.count(EventType::WIFI_CONFIGURATION_INVALID));
+}
+
+void test_connection_reconfigure_recovers_invalid_settings_without_reboot() {
+    FakeConnection port;
+    FakeEvents events;
+    port.configured = false;
+    ConnectionService service(port, events);
+    service.begin(0);
+    assertState(ConnectionService::State::INVALID, service);
+    port.configured = true;
+    service.reconfigure(100);
+    assertState(ConnectionService::State::CONNECTING, service);
+    TEST_ASSERT_EQUAL_UINT(2, port.configurations);
+    TEST_ASSERT_EQUAL_UINT(1, port.starts);
+    port.connected = true;
+    service.update(101);
+    TEST_ASSERT_TRUE(service.isConnected());
+    port.connected = false;
+    service.reconfigure(200);
+    TEST_ASSERT_EQUAL_UINT(2, port.starts);
+    TEST_ASSERT_EQUAL_UINT(2, port.stops);
+    assertState(ConnectionService::State::CONNECTING, service);
 }
 
 void test_connection_unavailable_expires_and_retries_at_interval_boundaries() {
@@ -645,7 +728,8 @@ void test_notification_retry_and_send_gap_start_after_blocking_send_completes() 
 void test_signal_startup_is_requested_without_io_and_finishes_at_boundary() {
     FakeOutput output;
     FakeButton button;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.begin();
     service.onEvent(Event(EventType::LIGHT_ON));
     TEST_ASSERT_FALSE(output.buzzer);
@@ -658,10 +742,34 @@ void test_signal_startup_is_requested_without_io_and_finishes_at_boundary() {
     TEST_ASSERT_FALSE(output.led);
 }
 
+void test_signal_uses_saved_startup_duration_across_tick_wrap_without_shortening_led_window() {
+    FakeOutput output;
+    FakeButton button;
+    DeviceSettings settings;
+    settings.startupSoundSeconds = 3;
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    const uint32_t start = UINT32_MAX - 1500;
+    service.update(start);
+    TEST_ASSERT_TRUE(output.buzzer);
+    TEST_ASSERT_TRUE(output.led);
+    service.update(start + 2999);
+    TEST_ASSERT_TRUE(output.buzzer);
+    service.update(start + 3000);
+    TEST_ASSERT_FALSE(output.buzzer);
+    TEST_ASSERT_FALSE(service.startupFinished());
+    service.update(start + SignalController::STARTUP_MS);
+    TEST_ASSERT_TRUE(service.startupFinished());
+}
+
 void test_signal_button_preheld_and_pressed_during_pattern_cancel_without_restarting() {
     FakeOutput output;
     FakeButton button;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.begin();
     button.pressed = true;
     service.onEvent(Event(EventType::LIGHT_ON));
@@ -685,7 +793,8 @@ void test_signal_button_preheld_and_pressed_during_pattern_cancel_without_restar
 void test_signal_connecting_pulse_and_connected_two_pulses_match_boundaries() {
     FakeOutput output;
     FakeButton button;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.begin();
     service.onEvent(Event(EventType::WIFI_START_CONNECT));
     service.onEvent(Event(EventType::WIFI_TRY_CONNECT));
@@ -718,7 +827,8 @@ void test_signal_connecting_pulse_and_connected_two_pulses_match_boundaries() {
 void test_signal_startup_has_priority_and_pending_connected_supersedes_connecting() {
     FakeOutput output;
     FakeButton button;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.begin();
     service.onEvent(Event(EventType::LIGHT_ON));
     service.update(0);
@@ -740,7 +850,8 @@ void test_signal_startup_has_priority_and_pending_connected_supersedes_connectin
 void test_signal_delivery_led_blinks_then_keeps_final_on_state() {
     FakeOutput output;
     FakeButton button;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.begin();
     service.onEvent(Event(EventType::WIFI_CONNECTED));
     service.update(0);
@@ -766,7 +877,8 @@ void test_signal_delivery_led_blinks_then_keeps_final_on_state() {
 void test_signal_startup_and_delivery_blink_survive_millis_rollover() {
     FakeOutput output;
     FakeButton button;
-    SignalController service(output, button);
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
     service.begin();
     const uint32_t start = UINT32_MAX - SignalController::LED_PHASE_MS / 2;
     service.onEvent(Event(EventType::LIGHT_ON));
@@ -785,6 +897,526 @@ void test_signal_startup_and_delivery_blink_survive_millis_rollover() {
     TEST_ASSERT_FALSE(output.buzzer);
 }
 
+void test_configured_signal_modes_follow_startup_waiting_and_idle_boundaries() {
+    FakeOutput output;
+    FakeButton button;
+    DeviceSettings settings;
+    settings.startupSound = false;
+    settings.wifiProgressSound = false;
+    settings.wifiConnectedSound = false;
+    settings.startupLed = LedMode::BLINK;
+    settings.waitingLed = LedMode::OFF;
+    settings.idleLed = LedMode::OFF;
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    const uint32_t start = UINT32_MAX - 100;
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.onEvent(Event(EventType::WIFI_START_CONNECT));
+    service.update(start);
+    TEST_ASSERT_TRUE(output.led);
+    TEST_ASSERT_FALSE(output.buzzer);
+    service.update(start + 499);
+    TEST_ASSERT_TRUE(output.led);
+    service.update(start + 500);
+    TEST_ASSERT_FALSE(output.led);
+    service.setOperatingState(SignalController::OperatingState::WAITING);
+    service.update(start + SignalController::STARTUP_MS - 1);
+    TEST_ASSERT_FALSE(service.startupFinished());
+    service.update(start + SignalController::STARTUP_MS);
+    TEST_ASSERT_TRUE(service.startupFinished());
+    TEST_ASSERT_FALSE(output.led);
+    service.setOperatingState(SignalController::OperatingState::IDLE);
+    service.onEvent(Event(EventType::MESSAGE_SEND));
+    service.update(start + SignalController::STARTUP_MS + 1);
+    TEST_ASSERT_FALSE(output.led);
+    service.update(start + SignalController::STARTUP_MS + 1001);
+    TEST_ASSERT_TRUE(output.led);
+    service.update(start + SignalController::STARTUP_MS + 1501);
+    TEST_ASSERT_FALSE(output.led);
+}
+
+void test_configured_signal_switches_cancel_active_sound_and_global_led() {
+    FakeOutput output;
+    FakeButton button;
+    DeviceSettings settings;
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    TEST_ASSERT_TRUE(output.buzzer);
+    TEST_ASSERT_TRUE(output.led);
+    settings.startupSound = false;
+    settings.ledEnabled = false;
+    service.update(1);
+    TEST_ASSERT_FALSE(output.buzzer);
+    TEST_ASSERT_FALSE(output.led);
+    service.onEvent(Event(EventType::WIFI_CONNECTED));
+    service.onEvent(Event(EventType::MESSAGE_SEND));
+    service.update(1000);
+    TEST_ASSERT_FALSE(output.led);
+    settings.wifiConnectedSound = false;
+    service.update(1001);
+    TEST_ASSERT_FALSE(output.buzzer);
+    settings.startupSound = true;
+    service.update(SignalController::STARTUP_MS);
+    TEST_ASSERT_FALSE(output.buzzer);
+}
+
+void test_disabling_startup_sound_preserves_enabled_pending_wifi_success() {
+    FakeOutput output;
+    FakeButton button;
+    DeviceSettings settings;
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    service.onEvent(Event(EventType::WIFI_CONNECTED));
+    settings.startupSound = false;
+    service.update(1);
+    TEST_ASSERT_FALSE(output.buzzer);
+    service.update(1 + SignalController::CONNECTED_PULSE_MS);
+    TEST_ASSERT_TRUE(output.buzzer);
+}
+
+void test_configured_preview_respects_led_off_and_button_and_expires() {
+    FakeOutput output;
+    FakeButton button;
+    DeviceSettings settings;
+    settings.startupSound = false;
+    settings.ledEnabled = false;
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    service.update(SignalController::STARTUP_MS);
+    TEST_ASSERT_FALSE(service.startPreview(SignalController::Preview::LED, LedMode::BLINK,
+                                           SignalController::STARTUP_MS));
+    TEST_ASSERT_TRUE(service.startPreview(SignalController::Preview::STARTUP, LedMode::OFF,
+                                          SignalController::STARTUP_MS));
+    service.update(SignalController::STARTUP_MS + 1);
+    TEST_ASSERT_TRUE(output.buzzer);
+    TEST_ASSERT_FALSE(output.led);
+    button.pressed = true;
+    service.update(SignalController::STARTUP_MS + 2);
+    TEST_ASSERT_FALSE(output.buzzer);
+    button.pressed = false;
+    settings.ledEnabled = true;
+    TEST_ASSERT_TRUE(
+        service.startPreview(SignalController::Preview::LED, LedMode::BLINK, UINT32_MAX - 250));
+    service.update(UINT32_MAX - 250);
+    TEST_ASSERT_TRUE(output.led);
+    service.update(250);
+    TEST_ASSERT_FALSE(output.led);
+    service.update(2750);
+    TEST_ASSERT_FALSE(output.buzzer);
+}
+
+void test_wifi_transition_cancels_active_sound_preview() {
+    FakeOutput output;
+    FakeButton button;
+    DeviceSettings settings;
+    settings.startupSound = false;
+    FakeTime wallTime;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    service.update(SignalController::STARTUP_MS);
+    TEST_ASSERT_TRUE(service.startPreview(SignalController::Preview::STARTUP, LedMode::OFF,
+                                          SignalController::STARTUP_MS));
+    service.update(SignalController::STARTUP_MS + 1);
+    TEST_ASSERT_TRUE(output.buzzer);
+    service.onEvent(Event(EventType::WIFI_RECONNECT));
+    service.update(SignalController::STARTUP_MS + 2);
+    TEST_ASSERT_FALSE(output.buzzer);
+}
+
+void test_quiet_hours_cover_daytime_overnight_and_unknown_time() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+
+    TEST_ASSERT_FALSE(service.quietHoursActive());
+    wallTime.valid = true;
+    for (const uint8_t hour : {21, 7, 12}) {
+        wallTime.hour = hour;
+        TEST_ASSERT_FALSE(service.quietHoursActive());
+    }
+    for (const uint8_t hour : {22, 23, 0, 6}) {
+        wallTime.hour = hour;
+        TEST_ASSERT_TRUE(service.quietHoursActive());
+    }
+    settings.quietStartHour = 9;
+    settings.quietEndHour = 17;
+    for (const uint8_t hour : {8, 17, 23}) {
+        wallTime.hour = hour;
+        TEST_ASSERT_FALSE(service.quietHoursActive());
+    }
+    for (const uint8_t hour : {9, 12, 16}) {
+        wallTime.hour = hour;
+        TEST_ASSERT_TRUE(service.quietHoursActive());
+    }
+    settings.quietHoursEnabled = false;
+    wallTime.valid = false;
+    TEST_ASSERT_FALSE(service.quietHoursActive());
+}
+
+void test_quiet_hours_stop_active_sound_without_replay_and_block_sound_preview() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    wallTime.valid = true;
+    wallTime.hour = 21;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    TEST_ASSERT_TRUE(output.buzzer);
+    TEST_ASSERT_TRUE(output.led);
+
+    wallTime.hour = 22;
+    service.update(500);
+    TEST_ASSERT_FALSE(output.buzzer);
+    service.update(SignalController::STARTUP_MS);
+    TEST_ASSERT_FALSE(service.startPreview(SignalController::Preview::STARTUP, LedMode::OFF,
+                                           SignalController::STARTUP_MS));
+    TEST_ASSERT_TRUE(service.startPreview(SignalController::Preview::LED, LedMode::BLINK,
+                                          SignalController::STARTUP_MS));
+
+    wallTime.hour = 7;
+    service.update(SignalController::STARTUP_MS + 1);
+    TEST_ASSERT_FALSE(output.buzzer);
+    service.onEvent(Event(EventType::WIFI_CONNECTED));
+    service.update(SignalController::STARTUP_MS + 2);
+    service.update(SignalController::STARTUP_MS + 2 + SignalController::CONNECTED_PULSE_MS);
+    TEST_ASSERT_TRUE(output.buzzer);
+}
+
+void test_unknown_time_uses_day_signals_then_applies_night_after_sync() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    const uint32_t start = UINT32_MAX - 500;
+    service.update(start);
+    TEST_ASSERT_TRUE(output.buzzer);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    wallTime.valid = true;
+    wallTime.hour = 23;
+    service.update(start + 1);
+    TEST_ASSERT_FALSE(output.buzzer);
+    TEST_ASSERT_EQUAL_UINT8(10, output.brightness);
+    wallTime.valid = false;
+    service.update(start + 2);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    TEST_ASSERT_FALSE(output.buzzer);
+    service.onEvent(Event(EventType::WIFI_TRY_CONNECT));
+    service.update(start + 3);
+    service.update(start + 3 + SignalController::CONNECT_PULSE_MS);
+    TEST_ASSERT_TRUE(output.buzzer);
+    service.update(start + SignalController::STARTUP_MS);
+    TEST_ASSERT_TRUE(service.startPreview(SignalController::Preview::STARTUP, LedMode::OFF,
+                                          start + SignalController::STARTUP_MS));
+    service.update(start + SignalController::STARTUP_MS + 1);
+    TEST_ASSERT_TRUE(output.buzzer);
+    wallTime.valid = true;
+    service.update(start + SignalController::STARTUP_MS + 2);
+    TEST_ASSERT_FALSE(output.buzzer);
+    TEST_ASSERT_EQUAL_UINT8(10, output.brightness);
+}
+
+void test_unknown_time_preserves_disabled_sound_categories_and_global_led_off() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    settings.startupSound = false;
+    settings.wifiProgressSound = false;
+    settings.wifiConnectedSound = false;
+    settings.ledEnabled = false;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    service.onEvent(Event(EventType::WIFI_TRY_CONNECT));
+    service.update(1);
+    service.update(1 + SignalController::CONNECT_PULSE_MS);
+    service.onEvent(Event(EventType::WIFI_CONNECTED));
+    service.update(200);
+    service.update(200 + SignalController::CONNECTED_PULSE_MS);
+    TEST_ASSERT_FALSE(output.buzzer);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+}
+
+void test_night_brightness_changes_with_calendar_time_and_keeps_global_off_priority() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    settings.quietLedBrightnessPercent = 20;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.setOperatingState(SignalController::OperatingState::IDLE);
+    const uint32_t start = UINT32_MAX - 250;
+    service.update(start);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    wallTime.valid = true;
+    wallTime.hour = 21;
+    service.update(start + 1);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    wallTime.hour = 22;
+    service.update(start + 2);
+    TEST_ASSERT_EQUAL_UINT8(20, output.brightness);
+    wallTime.hour = 0;
+    service.update(start + 500);
+    TEST_ASSERT_EQUAL_UINT8(20, output.brightness);
+    wallTime.hour = 7;
+    service.update(start + 501);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    wallTime.hour = 23;
+    settings.quietLedBrightnessPercent = 0;
+    service.update(start + 502);
+    TEST_ASSERT_FALSE(output.led);
+    settings.quietLedBrightnessPercent = 100;
+    service.update(start + 503);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    settings.quietHoursEnabled = false;
+    settings.quietLedBrightnessPercent = 20;
+    service.update(start + 504);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    settings.ledEnabled = false;
+    service.update(start + 505);
+    TEST_ASSERT_FALSE(output.led);
+}
+
+void test_night_brightness_applies_to_blink_delivery_and_preview_across_tick_wrap() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    wallTime.valid = true;
+    wallTime.hour = 23;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    settings.quietLedBrightnessPercent = 25;
+    settings.idleLed = LedMode::BLINK;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.setOperatingState(SignalController::OperatingState::IDLE);
+    const uint32_t start = UINT32_MAX - 250;
+    service.update(start);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.update(start + 499);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.update(start + 500);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    service.update(start + 1000);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.onEvent(Event(EventType::MESSAGE_SEND));
+    service.update(start + 1001);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    service.update(start + 2000);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    service.update(start + 2001);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.update(start + 2501);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    TEST_ASSERT_TRUE(
+        service.startPreview(SignalController::Preview::LED, LedMode::STEADY, start + 2502));
+    service.update(start + 2502);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    settings.ledEnabled = false;
+    service.update(start + 2503);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+}
+
+void test_led_brightness_preview_overrides_schedule_then_restores_it_without_saving() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    wallTime.valid = true;
+    wallTime.hour = 23;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.setOperatingState(SignalController::OperatingState::IDLE);
+    const uint32_t start = UINT32_MAX - 500;
+    TEST_ASSERT_TRUE(service.startLedPreview(LedMode::STEADY, 47, start));
+    service.update(start);
+    TEST_ASSERT_EQUAL_UINT8(47, output.brightness);
+    output.ledWrites.clear();
+    service.update(start + 1);
+    TEST_ASSERT_EQUAL_UINT(1, output.ledWrites.size());
+    TEST_ASSERT_EQUAL_UINT8(47, output.ledWrites[0]);
+    TEST_ASSERT_FALSE(service.startLedPreview(LedMode::STEADY, 101, start + 1));
+    TEST_ASSERT_FALSE(service.startLedPreview(static_cast<LedMode>(3), 20, start + 1));
+    service.update(start + 2999);
+    TEST_ASSERT_EQUAL_UINT8(47, output.brightness);
+    service.update(start + 3000);
+    TEST_ASSERT_EQUAL_UINT8(10, output.brightness);
+    TEST_ASSERT_EQUAL_UINT32(10, settings.quietLedBrightnessPercent);
+    TEST_ASSERT_EQUAL_UINT32(1, settings.revision);
+    wallTime.hour = 12;
+    TEST_ASSERT_TRUE(service.startLedPreview(LedMode::STEADY, 0, start + 3001));
+    service.update(start + 3001);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    TEST_ASSERT_TRUE(service.startLedPreview(LedMode::STEADY, 100, start + 3002));
+    service.update(start + 3002);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    TEST_ASSERT_TRUE(service.startLedPreview(LedMode::OFF, 100, start + 3003));
+    service.update(start + 3003);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    service.update(start + 6003);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+}
+
+void test_led_brightness_preview_preserves_blink_timing_and_cancels_safely() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    wallTime.valid = true;
+    wallTime.hour = 23;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.setOperatingState(SignalController::OperatingState::IDLE);
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    TEST_ASSERT_FALSE(service.startLedPreview(LedMode::STEADY, 50, 1));
+    service.update(SignalController::STARTUP_MS);
+    const uint32_t start = UINT32_MAX - 250;
+    TEST_ASSERT_TRUE(service.startLedPreview(LedMode::BLINK, 25, start));
+    service.update(start);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.update(start + 499);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.update(start + 500);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    output.ledWrites.clear();
+    service.update(start + 501);
+    TEST_ASSERT_EQUAL_UINT(1, output.ledWrites.size());
+    TEST_ASSERT_EQUAL_UINT8(0, output.ledWrites[0]);
+    service.update(start + 1000);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.onEvent(Event(EventType::WIFI_RECONNECT));
+    service.update(start + 1001);
+    TEST_ASSERT_EQUAL_UINT8(10, output.brightness);
+    TEST_ASSERT_TRUE(service.startLedPreview(LedMode::STEADY, 50, start + 1002));
+    service.update(start + 1002);
+    TEST_ASSERT_EQUAL_UINT8(50, output.brightness);
+    settings.ledEnabled = false;
+    service.update(start + 1003);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    TEST_ASSERT_FALSE(service.startLedPreview(LedMode::STEADY, 50, start + 1004));
+    settings.ledEnabled = true;
+    service.update(start + 1005);
+    TEST_ASSERT_EQUAL_UINT8(10, output.brightness);
+}
+
+void test_led_pwm_preserves_safe_startup_and_maps_percent_to_duty() {
+    FakeGpio::calls.clear();
+    ExternalLedActuator led(4);
+    led.begin();
+    TEST_ASSERT_EQUAL_UINT(3, FakeGpio::calls.size());
+    TEST_ASSERT_TRUE(FakeGpio::calls[0].kind == FakeGpio::Kind::DIGITAL);
+    TEST_ASSERT_EQUAL_INT(4, FakeGpio::calls[0].pin);
+    TEST_ASSERT_EQUAL_UINT(LOW, FakeGpio::calls[0].value);
+    TEST_ASSERT_TRUE(FakeGpio::calls[1].kind == FakeGpio::Kind::MODE);
+    TEST_ASSERT_TRUE(FakeGpio::calls[2].kind == FakeGpio::Kind::RANGE);
+    TEST_ASSERT_EQUAL_UINT(1023, FakeGpio::calls[2].value);
+    led.setBrightness(0);
+    TEST_ASSERT_EQUAL_UINT(3, FakeGpio::calls.size());
+    led.setBrightness(25);
+    TEST_ASSERT_TRUE(FakeGpio::calls.back().kind == FakeGpio::Kind::PWM);
+    TEST_ASSERT_EQUAL_INT(4, FakeGpio::calls.back().pin);
+    TEST_ASSERT_EQUAL_UINT(256, FakeGpio::calls.back().value);
+    const size_t count = FakeGpio::calls.size();
+    led.setBrightness(25);
+    TEST_ASSERT_EQUAL_UINT(count, FakeGpio::calls.size());
+    led.setBrightness(0);
+    TEST_ASSERT_EQUAL_UINT(0, FakeGpio::calls.back().value);
+    led.setBrightness(100);
+    TEST_ASSERT_EQUAL_UINT(1023, FakeGpio::calls.back().value);
+    led.setBrightness(255);
+    TEST_ASSERT_EQUAL_UINT(count + 2, FakeGpio::calls.size());
+    led.setState(false);
+    TEST_ASSERT_EQUAL_UINT(0, FakeGpio::calls.back().value);
+}
+
+void test_device_settings_validate_network_telegram_and_signal_modes() {
+    DeviceSettings settings;
+    strcpy(settings.ssid, "network");
+    strcpy(settings.ip, "192.168.1.20");
+    strcpy(settings.gateway, "192.168.1.1");
+    strcpy(settings.subnet, "255.255.255.0");
+    strcpy(settings.botToken, "123:abc");
+    strcpy(settings.message, "Light on");
+    strcpy(settings.recipients[0], "123");
+    settings.recipientCount = 1;
+    TEST_ASSERT_TRUE(validNetworkSettings(settings));
+    TEST_ASSERT_TRUE(validTelegramSettings(settings));
+    TEST_ASSERT_TRUE(validSignalSettings(settings));
+    settings.quietLedBrightnessPercent = 0;
+    TEST_ASSERT_TRUE(validSignalSettings(settings));
+    settings.quietLedBrightnessPercent = 100;
+    TEST_ASSERT_TRUE(validSignalSettings(settings));
+    settings.quietLedBrightnessPercent = 101;
+    TEST_ASSERT_FALSE(validSignalSettings(settings));
+    settings.quietLedBrightnessPercent = 10;
+    settings.startupSoundSeconds = 0;
+    TEST_ASSERT_FALSE(validSignalSettings(settings));
+    settings.startupSoundSeconds = 60;
+    TEST_ASSERT_TRUE(validSignalSettings(settings));
+    settings.startupSoundSeconds = 61;
+    TEST_ASSERT_FALSE(validSignalSettings(settings));
+    settings.startupSoundSeconds = 10;
+    settings.quietHoursEnabled = true;
+    settings.quietStartHour = 24;
+    TEST_ASSERT_FALSE(validSignalSettings(settings));
+    settings.quietStartHour = 22;
+    settings.quietEndHour = 22;
+    TEST_ASSERT_FALSE(validSignalSettings(settings));
+    settings.quietEndHour = 7;
+    TEST_ASSERT_TRUE(validSignalSettings(settings));
+    settings.startupLed = static_cast<LedMode>(3);
+    TEST_ASSERT_FALSE(validSignalSettings(settings));
+    settings.startupLed = LedMode::STEADY;
+    strcpy(settings.recipients[0], "000123");
+    TEST_ASSERT_FALSE(validTelegramSettings(settings));
+    strcpy(settings.recipients[0], "123");
+    strcpy(settings.gateway, "192.168.2.1");
+    TEST_ASSERT_FALSE(validNetworkSettings(settings));
+}
+
 void test_application_services_ota_during_startup_and_missing_ntp_then_delivers() {
     EventNotifier events;
     FakeConnection network;
@@ -797,7 +1429,7 @@ void test_application_services_ota_during_startup_and_missing_ntp_then_delivers(
     TimeService time(clock, events);
     FakeClock monotonicClock;
     NotificationService notifications(sender, events, monotonicClock);
-    SignalController signals(output, button);
+    SignalController signals(output, button, clock);
     TEST_ASSERT_TRUE(events.addObserver(&signals));
     NotifierApplication app(connection, time, notifications, signals, ota, events);
     const char* recipients[] = {"101"};
@@ -848,7 +1480,7 @@ void test_application_missing_wifi_still_finishes_signals_and_retries_without_se
     TimeService time(clock, events);
     FakeClock monotonicClock;
     NotificationService notifications(sender, events, monotonicClock);
-    SignalController signals(output, button);
+    SignalController signals(output, button, clock);
     TEST_ASSERT_TRUE(events.addObserver(&signals));
     NotifierApplication app(connection, time, notifications, signals, ota, events);
     const char* recipients[] = {"101"};
@@ -889,6 +1521,7 @@ void test_http_content_length_completes_without_waiting_for_connection_close() {
     TEST_ASSERT_TRUE(response.isComplete());
     TEST_ASSERT_TRUE(response.isValid());
     TEST_ASSERT_TRUE(response.isSuccessStatus());
+    TEST_ASSERT_EQUAL_INT(200, response.statusCode());
     TEST_ASSERT_EQUAL_UINT(body.size(), response.bodySize());
     TEST_ASSERT_EQUAL_STRING(body.c_str(), response.body());
     TEST_ASSERT_TRUE(isAcknowledged(response));
@@ -908,6 +1541,7 @@ void test_http_connection_closed_body_and_non_success_status_are_distinguished()
         TEST_ASSERT_TRUE(appendResponse(failure, framedResponse("{\"ok\":true}", status)));
         TEST_ASSERT_TRUE(failure.isValid());
         TEST_ASSERT_FALSE(failure.isSuccessStatus());
+        TEST_ASSERT_EQUAL_INT(status, failure.statusCode());
         TEST_ASSERT_FALSE(isAcknowledged(failure));
     }
 }
@@ -998,6 +1632,93 @@ void test_telegram_acknowledgement_filters_maximum_escaped_message_and_chat_meta
     TEST_ASSERT_EQUAL_UINT(body.size(), response.bodySize());
 }
 
+class FakeTelegramConnection : public TelegramConnectPort {
+public:
+    bool dnsOk = true;
+    bool tcpOk = true;
+    bool handshakeOk = true;
+    bool mflnOk = true;
+    int error = 0;
+    std::vector<std::string> calls;
+
+    bool resolve(const char* host, uint32_t timeoutMs) override {
+        calls.push_back(std::string("dns:") + host + ":" + std::to_string(timeoutMs));
+        return dnsOk;
+    }
+    void setIoTimeout(uint32_t timeoutMs) override {
+        calls.push_back("timeout:" + std::to_string(timeoutMs));
+    }
+    bool connectTcp() override {
+        calls.push_back("tcp");
+        return tcpOk;
+    }
+    bool handshake(const char* host) override {
+        calls.push_back(std::string("tls:") + host);
+        return handshakeOk;
+    }
+    int handshakeError() override {
+        calls.push_back("tls-error");
+        return error;
+    }
+    bool mflnAccepted() override {
+        calls.push_back("mfln");
+        return mflnOk;
+    }
+    void close() override {
+        calls.push_back("close");
+    }
+};
+
+void test_telegram_tls_requires_mfln_and_closes_rejected_connection() {
+    FakeTelegramConnection client;
+    const auto result = connectTelegram(client, "api.telegram.org", 1000, 1000, 1000);
+    TEST_ASSERT_TRUE(result.connected());
+    TEST_ASSERT_EQUAL_INT(0, result.tlsError);
+    const std::vector<std::string> expected = {
+        "dns:api.telegram.org:1000", "timeout:1000", "tcp",
+        "tls:api.telegram.org",      "mfln",         "timeout:1000"};
+    TEST_ASSERT_TRUE(client.calls == expected);
+
+    client.calls.clear();
+    client.mflnOk = false;
+    const auto rejected = connectTelegram(client, "api.telegram.org", 1000, 1000, 1000);
+    TEST_ASSERT_FALSE(rejected.connected());
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TelegramConnectFailure::TLS_FRAGMENT),
+                          static_cast<int>(rejected.failure));
+    TEST_ASSERT_EQUAL_STRING("close", client.calls.back().c_str());
+}
+
+void test_telegram_tls_allocation_failure_closes_socket_and_preserves_error() {
+    FakeTelegramConnection client;
+    client.handshakeOk = false;
+    client.error = -1000;
+    const auto result = connectTelegram(client, "api.telegram.org", 1000, 1000, 1000);
+    TEST_ASSERT_FALSE(result.connected());
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TelegramConnectFailure::TLS),
+                          static_cast<int>(result.failure));
+    TEST_ASSERT_EQUAL_INT(-1000, result.tlsError);
+    TEST_ASSERT_EQUAL_STRING("close", client.calls.back().c_str());
+    TEST_ASSERT_TRUE(std::find(client.calls.begin(), client.calls.end(), "mfln") ==
+                     client.calls.end());
+}
+
+void test_telegram_dns_and_tcp_fail_before_tls() {
+    FakeTelegramConnection client;
+    client.dnsOk = false;
+    const auto dns = connectTelegram(client, "api.telegram.org", 1000, 1000, 1000);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TelegramConnectFailure::DNS),
+                          static_cast<int>(dns.failure));
+    TEST_ASSERT_EQUAL_UINT(1, client.calls.size());
+
+    client.calls.clear();
+    client.dnsOk = true;
+    client.tcpOk = false;
+    const auto tcp = connectTelegram(client, "api.telegram.org", 1000, 1000, 1000);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(TelegramConnectFailure::TCP),
+                          static_cast<int>(tcp.failure));
+    TEST_ASSERT_EQUAL_STRING("tcp", client.calls.back().c_str());
+}
+
 void test_static_network_parses_valid_addresses_and_contiguous_subnet() {
     StaticNetworkConfig result = {};
     TEST_ASSERT_TRUE(parseStaticNetwork("192.168.1.20", "192.168.1.1", "255.255.255.0", result));
@@ -1078,6 +1799,223 @@ void test_notification_accepts_full_32_character_channel_name_and_preserves_case
     assertOutcome(NotificationService::Outcome::DELIVERED, service);
 }
 
+DeviceSettings validStoredSettings() {
+    DeviceSettings settings = {};
+    strcpy(settings.ssid, "network");
+    strcpy(settings.ip, "192.168.1.20");
+    strcpy(settings.gateway, "192.168.1.1");
+    strcpy(settings.subnet, "255.255.255.0");
+    strcpy(settings.botToken, "123:abc");
+    strcpy(settings.message, "Light on");
+    strcpy(settings.recipients[0], "123");
+    settings.recipientCount = 1;
+    settings.configured = true;
+    return settings;
+}
+
+void resetFakeStorage() {
+    LittleFS.files.clear();
+    LittleFS.failWrite = false;
+    LittleFS.failRename = false;
+    memset(EEPROM.bytes, 0, sizeof(EEPROM.bytes));
+    EEPROM.failCommit = false;
+}
+
+void test_settings_store_preserves_previous_record_after_interrupted_replacement() {
+    resetFakeStorage();
+    SettingsStore firstBoot;
+    TEST_ASSERT_TRUE(firstBoot.begin());
+    DeviceSettings original = validStoredSettings();
+    TEST_ASSERT_TRUE(firstBoot.save(original));
+    TEST_ASSERT_TRUE(firstBoot.wasProvisioned());
+    DeviceSettings replacement = original;
+    replacement.revision = 2;
+    replacement.quietLedBrightnessPercent = 35;
+    strcpy(replacement.message, "Revised");
+    LittleFS.failRename = true;
+    TEST_ASSERT_FALSE(firstBoot.save(replacement));
+    LittleFS.failRename = false;
+    SettingsStore reboot;
+    TEST_ASSERT_TRUE(reboot.begin());
+    DeviceSettings loaded = {};
+    TEST_ASSERT_TRUE(reboot.load(loaded));
+    TEST_ASSERT_EQUAL_STRING("Light on", loaded.message);
+    TEST_ASSERT_EQUAL_UINT32(10, loaded.quietLedBrightnessPercent);
+    TEST_ASSERT_TRUE(reboot.wasProvisioned());
+    TEST_ASSERT_TRUE(reboot.save(replacement));
+    SettingsStore nextBoot;
+    TEST_ASSERT_TRUE(nextBoot.begin());
+    TEST_ASSERT_TRUE(nextBoot.load(loaded));
+    TEST_ASSERT_EQUAL_STRING("Revised", loaded.message);
+    TEST_ASSERT_EQUAL_UINT32(35, loaded.quietLedBrightnessPercent);
+}
+
+void test_settings_store_rejects_future_schema_until_explicit_reset() {
+    resetFakeStorage();
+    SettingsStore store;
+    TEST_ASSERT_TRUE(store.begin());
+    DeviceSettings original = validStoredSettings();
+    TEST_ASSERT_TRUE(store.save(original));
+    auto& record = LittleFS.files["/settings-a.bin"];
+    const uint32_t future = DeviceSettings::SCHEMA + 1;
+    memcpy(record.data() + 12, &future, sizeof(future));
+    SettingsStore reboot;
+    TEST_ASSERT_TRUE(reboot.begin());
+    DeviceSettings loaded = {};
+    TEST_ASSERT_FALSE(reboot.load(loaded));
+    TEST_ASSERT_TRUE(reboot.hasUnsupportedSchema());
+    TEST_ASSERT_FALSE(reboot.save(original));
+    DeviceSettings empty = {};
+    empty.revision = 2;
+    TEST_ASSERT_TRUE(reboot.reset(empty));
+    SettingsStore afterReset;
+    TEST_ASSERT_TRUE(afterReset.begin());
+    TEST_ASSERT_TRUE(afterReset.load(loaded));
+    TEST_ASSERT_FALSE(loaded.configured);
+    TEST_ASSERT_TRUE(afterReset.wasProvisioned());
+}
+
+void test_settings_store_requires_durable_provisioning_marker_before_first_record() {
+    resetFakeStorage();
+    EEPROM.failCommit = true;
+    SettingsStore store;
+    TEST_ASSERT_TRUE(store.begin());
+    DeviceSettings settings = validStoredSettings();
+    TEST_ASSERT_FALSE(store.save(settings));
+    TEST_ASSERT_FALSE(store.hasRecords());
+    EEPROM.failCommit = false;
+    TEST_ASSERT_TRUE(store.save(settings));
+}
+
+void test_settings_store_migrates_version_one_without_losing_saved_configuration() {
+    resetFakeStorage();
+    DeviceSettings oldSettings = validStoredSettings();
+    oldSettings.schema = 1;
+    constexpr size_t oldSize = 1132;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(&oldSettings);
+    uint32_t checksum = 2166136261UL;
+    for (size_t i = 0; i < oldSize; ++i) {
+        checksum = (checksum ^ bytes[i]) * 16777619UL;
+    }
+    uint32_t header[] = {0x4c4f4e31, oldSize, checksum};
+    auto& file = LittleFS.files["/settings-a.bin"];
+    file.resize(sizeof(header) + oldSize);
+    memcpy(file.data(), header, sizeof(header));
+    memcpy(file.data() + sizeof(header), bytes, oldSize);
+
+    SettingsStore store;
+    TEST_ASSERT_TRUE(store.begin());
+    DeviceSettings loaded;
+    TEST_ASSERT_TRUE(store.load(loaded));
+    TEST_ASSERT_EQUAL_UINT32(DeviceSettings::SCHEMA, loaded.schema);
+    TEST_ASSERT_EQUAL_UINT32(10, loaded.startupSoundSeconds);
+    TEST_ASSERT_EQUAL_UINT32(10, loaded.quietLedBrightnessPercent);
+    TEST_ASSERT_FALSE(loaded.quietHoursEnabled);
+    TEST_ASSERT_EQUAL_UINT8(22, loaded.quietStartHour);
+    TEST_ASSERT_EQUAL_UINT8(7, loaded.quietEndHour);
+    TEST_ASSERT_EQUAL_STRING(oldSettings.ssid, loaded.ssid);
+    TEST_ASSERT_EQUAL_STRING(oldSettings.message, loaded.message);
+    loaded.revision = 2;
+    loaded.startupSoundSeconds = 25;
+    TEST_ASSERT_TRUE(store.save(loaded));
+
+    SettingsStore reboot;
+    TEST_ASSERT_TRUE(reboot.begin());
+    DeviceSettings reloaded;
+    TEST_ASSERT_TRUE(reboot.load(reloaded));
+    TEST_ASSERT_EQUAL_UINT32(25, reloaded.startupSoundSeconds);
+    TEST_ASSERT_EQUAL_STRING(oldSettings.ssid, reloaded.ssid);
+}
+
+void test_settings_store_migrates_version_two_with_quiet_hours_disabled() {
+    resetFakeStorage();
+    DeviceSettings oldSettings = validStoredSettings();
+    oldSettings.schema = 2;
+    oldSettings.startupSoundSeconds = 25;
+    constexpr size_t oldSize = 1136;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(&oldSettings);
+    uint32_t checksum = 2166136261UL;
+    for (size_t i = 0; i < oldSize; ++i) {
+        checksum = (checksum ^ bytes[i]) * 16777619UL;
+    }
+    const uint32_t header[] = {0x4c4f4e31, oldSize, checksum};
+    auto& file = LittleFS.files["/settings-a.bin"];
+    file.resize(sizeof(header) + oldSize);
+    memcpy(file.data(), header, sizeof(header));
+    memcpy(file.data() + sizeof(header), bytes, oldSize);
+
+    SettingsStore store;
+    TEST_ASSERT_TRUE(store.begin());
+    DeviceSettings loaded;
+    TEST_ASSERT_TRUE(store.load(loaded));
+    TEST_ASSERT_EQUAL_UINT32(DeviceSettings::SCHEMA, loaded.schema);
+    TEST_ASSERT_EQUAL_UINT32(25, loaded.startupSoundSeconds);
+    TEST_ASSERT_EQUAL_UINT32(10, loaded.quietLedBrightnessPercent);
+    TEST_ASSERT_FALSE(loaded.quietHoursEnabled);
+    TEST_ASSERT_EQUAL_UINT8(22, loaded.quietStartHour);
+    TEST_ASSERT_EQUAL_UINT8(7, loaded.quietEndHour);
+    TEST_ASSERT_EQUAL_UINT(sizeof(header) + oldSize, file.size());
+
+    loaded.revision = 2;
+    loaded.quietHoursEnabled = true;
+    TEST_ASSERT_TRUE(store.save(loaded));
+    SettingsStore reboot;
+    TEST_ASSERT_TRUE(reboot.begin());
+    DeviceSettings reloaded;
+    TEST_ASSERT_TRUE(reboot.load(reloaded));
+    TEST_ASSERT_TRUE(reloaded.quietHoursEnabled);
+    TEST_ASSERT_EQUAL_UINT8(22, reloaded.quietStartHour);
+    TEST_ASSERT_EQUAL_UINT8(7, reloaded.quietEndHour);
+}
+
+void test_settings_store_migrates_version_three_and_persists_night_brightness() {
+    resetFakeStorage();
+    DeviceSettings oldSettings = validStoredSettings();
+    oldSettings.schema = 3;
+    oldSettings.startupSoundSeconds = 25;
+    oldSettings.quietHoursEnabled = true;
+    oldSettings.quietStartHour = 23;
+    oldSettings.quietEndHour = 6;
+    oldSettings.adminConfigured = true;
+    memset(oldSettings.adminHash, 55, sizeof(oldSettings.adminHash));
+    constexpr size_t oldSize = 1140;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(&oldSettings);
+    uint32_t checksum = 2166136261UL;
+    for (size_t i = 0; i < oldSize; ++i) {
+        checksum = (checksum ^ bytes[i]) * 16777619UL;
+    }
+    const uint32_t header[] = {0x4c4f4e31, oldSize, checksum};
+    auto& file = LittleFS.files["/settings-a.bin"];
+    file.resize(sizeof(header) + oldSize);
+    memcpy(file.data(), header, sizeof(header));
+    memcpy(file.data() + sizeof(header), bytes, oldSize);
+    const auto originalRecord = file;
+    SettingsStore store;
+    TEST_ASSERT_TRUE(store.begin());
+    DeviceSettings loaded;
+    TEST_ASSERT_TRUE(store.load(loaded));
+    TEST_ASSERT_EQUAL_UINT32(DeviceSettings::SCHEMA, loaded.schema);
+    TEST_ASSERT_EQUAL_UINT32(10, loaded.quietLedBrightnessPercent);
+    TEST_ASSERT_TRUE(loaded.quietHoursEnabled);
+    TEST_ASSERT_EQUAL_UINT8(23, loaded.quietStartHour);
+    TEST_ASSERT_EQUAL_UINT8(6, loaded.quietEndHour);
+    TEST_ASSERT_EQUAL_UINT32(25, loaded.startupSoundSeconds);
+    TEST_ASSERT_EQUAL_STRING(oldSettings.ssid, loaded.ssid);
+    TEST_ASSERT_EQUAL_STRING(oldSettings.botToken, loaded.botToken);
+    TEST_ASSERT_EQUAL_MEMORY(oldSettings.adminHash, loaded.adminHash, sizeof(loaded.adminHash));
+    TEST_ASSERT_TRUE(file == originalRecord);
+    loaded.revision = 2;
+    loaded.quietLedBrightnessPercent = 33;
+    TEST_ASSERT_TRUE(store.save(loaded));
+    SettingsStore reboot;
+    TEST_ASSERT_TRUE(reboot.begin());
+    DeviceSettings reloaded;
+    TEST_ASSERT_TRUE(reboot.load(reloaded));
+    TEST_ASSERT_EQUAL_UINT32(33, reloaded.quietLedBrightnessPercent);
+    TEST_ASSERT_TRUE(reloaded.quietHoursEnabled);
+    TEST_ASSERT_EQUAL_UINT8(23, reloaded.quietStartHour);
+}
+
 } // namespace
 
 void setUp() {}
@@ -1085,9 +2023,12 @@ void tearDown() {}
 
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_web_field_accepts_valid_wifi_values_and_rejects_oversize_or_embedded_null);
+    RUN_TEST(test_percentage_input_accepts_bounds_and_rejects_malformed_values_atomically);
     RUN_TEST(test_dispatch_rejects_null_duplicate_and_capacity_then_removes_in_order);
     RUN_TEST(test_dispatch_rejects_mutation_and_nesting_and_borrows_payload_synchronously);
     RUN_TEST(test_connection_invalid_configuration_never_starts_or_retries);
+    RUN_TEST(test_connection_reconfigure_recovers_invalid_settings_without_reboot);
     RUN_TEST(test_connection_unavailable_expires_and_retries_at_interval_boundaries);
     RUN_TEST(test_connection_loss_retries_immediately_and_recovery_publishes_once);
     RUN_TEST(test_connection_retry_timing_survives_millis_rollover);
@@ -1104,11 +2045,28 @@ int main() {
     RUN_TEST(test_notification_retry_and_send_gap_survive_millis_rollover);
     RUN_TEST(test_notification_retry_and_send_gap_start_after_blocking_send_completes);
     RUN_TEST(test_signal_startup_is_requested_without_io_and_finishes_at_boundary);
+    RUN_TEST(
+        test_signal_uses_saved_startup_duration_across_tick_wrap_without_shortening_led_window);
     RUN_TEST(test_signal_button_preheld_and_pressed_during_pattern_cancel_without_restarting);
     RUN_TEST(test_signal_connecting_pulse_and_connected_two_pulses_match_boundaries);
     RUN_TEST(test_signal_startup_has_priority_and_pending_connected_supersedes_connecting);
     RUN_TEST(test_signal_delivery_led_blinks_then_keeps_final_on_state);
     RUN_TEST(test_signal_startup_and_delivery_blink_survive_millis_rollover);
+    RUN_TEST(test_configured_signal_modes_follow_startup_waiting_and_idle_boundaries);
+    RUN_TEST(test_configured_signal_switches_cancel_active_sound_and_global_led);
+    RUN_TEST(test_disabling_startup_sound_preserves_enabled_pending_wifi_success);
+    RUN_TEST(test_configured_preview_respects_led_off_and_button_and_expires);
+    RUN_TEST(test_wifi_transition_cancels_active_sound_preview);
+    RUN_TEST(test_quiet_hours_cover_daytime_overnight_and_unknown_time);
+    RUN_TEST(test_quiet_hours_stop_active_sound_without_replay_and_block_sound_preview);
+    RUN_TEST(test_unknown_time_uses_day_signals_then_applies_night_after_sync);
+    RUN_TEST(test_unknown_time_preserves_disabled_sound_categories_and_global_led_off);
+    RUN_TEST(test_night_brightness_changes_with_calendar_time_and_keeps_global_off_priority);
+    RUN_TEST(test_night_brightness_applies_to_blink_delivery_and_preview_across_tick_wrap);
+    RUN_TEST(test_led_brightness_preview_overrides_schedule_then_restores_it_without_saving);
+    RUN_TEST(test_led_brightness_preview_preserves_blink_timing_and_cancels_safely);
+    RUN_TEST(test_led_pwm_preserves_safe_startup_and_maps_percent_to_duty);
+    RUN_TEST(test_device_settings_validate_network_telegram_and_signal_modes);
     RUN_TEST(test_application_services_ota_during_startup_and_missing_ntp_then_delivers);
     RUN_TEST(test_application_missing_wifi_still_finishes_signals_and_retries_without_sending);
     RUN_TEST(test_http_content_length_completes_without_waiting_for_connection_close);
@@ -1117,9 +2075,18 @@ int main() {
     RUN_TEST(test_http_total_buffer_boundary_accepts_exact_capacity_and_rejects_overflow);
     RUN_TEST(test_telegram_acknowledgement_requires_boolean_true_and_rejects_invalid_json);
     RUN_TEST(test_telegram_acknowledgement_filters_maximum_escaped_message_and_chat_metadata);
+    RUN_TEST(test_telegram_tls_requires_mfln_and_closes_rejected_connection);
+    RUN_TEST(test_telegram_tls_allocation_failure_closes_socket_and_preserves_error);
+    RUN_TEST(test_telegram_dns_and_tcp_fail_before_tls);
     RUN_TEST(test_static_network_parses_valid_addresses_and_contiguous_subnet);
     RUN_TEST(test_static_network_rejects_invalid_settings_atomically_without_dhcp_fallback);
     RUN_TEST(test_notification_rejects_noncanonical_numeric_ids_and_duplicate_channel_names);
     RUN_TEST(test_notification_accepts_full_32_character_channel_name_and_preserves_case);
+    RUN_TEST(test_settings_store_preserves_previous_record_after_interrupted_replacement);
+    RUN_TEST(test_settings_store_rejects_future_schema_until_explicit_reset);
+    RUN_TEST(test_settings_store_requires_durable_provisioning_marker_before_first_record);
+    RUN_TEST(test_settings_store_migrates_version_one_without_losing_saved_configuration);
+    RUN_TEST(test_settings_store_migrates_version_two_with_quiet_hours_disabled);
+    RUN_TEST(test_settings_store_migrates_version_three_and_persists_night_brightness);
     return UNITY_END();
 }

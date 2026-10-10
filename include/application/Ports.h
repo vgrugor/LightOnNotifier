@@ -23,6 +23,7 @@ public:
     virtual ~TimePort() = default;
     virtual void startSynchronization() = 0;
     virtual bool isValid() const = 0;
+    virtual bool localHour(uint8_t& hour) const = 0;
 };
 
 class MessageSender {
@@ -34,7 +35,7 @@ public:
 class SignalOutput {
 public:
     virtual ~SignalOutput() = default;
-    virtual void setLed(bool active) = 0;
+    virtual void setLedBrightness(uint8_t percent) = 0;
     virtual void setBuzzer(bool active) = 0;
 };
 

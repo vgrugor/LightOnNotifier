@@ -14,16 +14,29 @@ public:
         led.begin();
         buzzer.begin();
     }
-    void setLed(bool active) override {
-        led.setState(active);
+    void setLedBrightness(uint8_t percent) override {
+        ledBrightness = percent > 100 ? 100 : percent;
+        led.setBrightness(ledBrightness);
     }
     void setBuzzer(bool active) override {
         buzzer.setState(active);
+        buzzerActive = active;
+    }
+    bool isLedActive() const {
+        return ledBrightness != 0;
+    }
+    uint8_t ledBrightnessPercent() const {
+        return ledBrightness;
+    }
+    bool isBuzzerActive() const {
+        return buzzerActive;
     }
 
 private:
     ExternalLedActuator& led;
     BuzzerActuator& buzzer;
+    uint8_t ledBrightness = 0;
+    bool buzzerActive = false;
 };
 
 class GpioButton : public ButtonPort {

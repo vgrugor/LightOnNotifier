@@ -6,4 +6,6 @@
 src/infrastructure/env.cpp
 
 .venv/
+.pnpm-store/
+node_modules/
 __pycache__/

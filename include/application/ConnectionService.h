@@ -14,6 +14,7 @@ public:
     static constexpr uint32_t PROGRESS_MS = 1000;
     ConnectionService(ConnectionPort& connection, EventSink& events);
     void begin(uint32_t now);
+    void reconfigure(uint32_t now);
     void update(uint32_t now);
     bool isConnected() const;
     State state() const {
