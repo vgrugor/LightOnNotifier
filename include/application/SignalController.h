@@ -31,6 +31,7 @@ public:
     bool quietHoursActive() const;
     enum class Preview { STARTUP, CONNECTING, CONNECTED, LED };
     bool startPreview(Preview kind, LedMode mode, uint32_t now);
+    bool startLedPreview(LedMode mode, uint32_t brightnessPercent, uint32_t now);
 
 private:
     enum class Pattern { NONE, STARTUP, CONNECTING, CONNECTED };
@@ -59,6 +60,8 @@ private:
     bool previewNeedsSilence = false;
     Preview previewKind = Preview::STARTUP;
     LedMode previewLedMode = LedMode::OFF;
+    bool previewBrightnessOverride = false;
+    uint8_t previewBrightness = 100;
     uint32_t previewStarted = 0;
     uint32_t stateStarted = 0;
     OperatingState lastOperatingState = OperatingState::CONNECTING;

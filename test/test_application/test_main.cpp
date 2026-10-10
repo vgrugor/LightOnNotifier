@@ -49,6 +49,23 @@ void test_web_field_accepts_valid_wifi_values_and_rejects_oversize_or_embedded_n
     TEST_ASSERT_EQUAL_STRING(maxLength, ssid);
 }
 
+void test_percentage_input_accepts_bounds_and_rejects_malformed_values_atomically() {
+    uint32_t percent = 17;
+    TEST_ASSERT_TRUE(parsePercentage("0", 1, percent));
+    TEST_ASSERT_EQUAL_UINT32(0, percent);
+    TEST_ASSERT_TRUE(parsePercentage("100", 3, percent));
+    TEST_ASSERT_EQUAL_UINT32(100, percent);
+    const char* invalid[] = {"", "101", "999", "1000", "-1", "+1", "1.5", "10%", " 1", "1 "};
+    for (const char* value : invalid) {
+        TEST_ASSERT_FALSE(parsePercentage(value, strlen(value), percent));
+        TEST_ASSERT_EQUAL_UINT32(100, percent);
+    }
+    TEST_ASSERT_FALSE(parsePercentage(nullptr, 1, percent));
+    const char embeddedNull[] = {'1', '\0', '0'};
+    TEST_ASSERT_FALSE(parsePercentage(embeddedNull, sizeof(embeddedNull), percent));
+    TEST_ASSERT_EQUAL_UINT32(100, percent);
+}
+
 struct RecordedEvent {
     EventType type;
     std::string message;
@@ -153,8 +170,10 @@ class FakeOutput : public SignalOutput {
 public:
     bool led = false;
     uint8_t brightness = 0;
+    std::vector<uint8_t> ledWrites;
     bool buzzer = false;
     void setLedBrightness(uint8_t percent) override {
+        ledWrites.push_back(percent);
         brightness = percent;
         led = percent != 0;
     }
@@ -1030,7 +1049,7 @@ void test_quiet_hours_cover_daytime_overnight_and_unknown_time() {
     SignalController service(output, button, wallTime);
     service.setSettings(settings);
 
-    TEST_ASSERT_TRUE(service.quietHoursActive());
+    TEST_ASSERT_FALSE(service.quietHoursActive());
     wallTime.valid = true;
     for (const uint8_t hour : {21, 7, 12}) {
         wallTime.hour = hour;
@@ -1089,7 +1108,7 @@ void test_quiet_hours_stop_active_sound_without_replay_and_block_sound_preview()
     TEST_ASSERT_TRUE(output.buzzer);
 }
 
-void test_quiet_hours_mute_startup_until_clock_is_ready_without_affecting_led() {
+void test_unknown_time_uses_day_signals_then_applies_night_after_sync() {
     FakeOutput output;
     FakeButton button;
     FakeTime wallTime;
@@ -1099,13 +1118,57 @@ void test_quiet_hours_mute_startup_until_clock_is_ready_without_affecting_led() 
     service.setSettings(settings);
     service.begin();
     service.onEvent(Event(EventType::LIGHT_ON));
-    service.update(0);
-    TEST_ASSERT_FALSE(output.buzzer);
-    TEST_ASSERT_TRUE(output.led);
+    const uint32_t start = UINT32_MAX - 500;
+    service.update(start);
+    TEST_ASSERT_TRUE(output.buzzer);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
     wallTime.valid = true;
-    wallTime.hour = 12;
-    service.update(1);
+    wallTime.hour = 23;
+    service.update(start + 1);
     TEST_ASSERT_FALSE(output.buzzer);
+    TEST_ASSERT_EQUAL_UINT8(10, output.brightness);
+    wallTime.valid = false;
+    service.update(start + 2);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    TEST_ASSERT_FALSE(output.buzzer);
+    service.onEvent(Event(EventType::WIFI_TRY_CONNECT));
+    service.update(start + 3);
+    service.update(start + 3 + SignalController::CONNECT_PULSE_MS);
+    TEST_ASSERT_TRUE(output.buzzer);
+    service.update(start + SignalController::STARTUP_MS);
+    TEST_ASSERT_TRUE(service.startPreview(SignalController::Preview::STARTUP, LedMode::OFF,
+                                          start + SignalController::STARTUP_MS));
+    service.update(start + SignalController::STARTUP_MS + 1);
+    TEST_ASSERT_TRUE(output.buzzer);
+    wallTime.valid = true;
+    service.update(start + SignalController::STARTUP_MS + 2);
+    TEST_ASSERT_FALSE(output.buzzer);
+    TEST_ASSERT_EQUAL_UINT8(10, output.brightness);
+}
+
+void test_unknown_time_preserves_disabled_sound_categories_and_global_led_off() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    settings.startupSound = false;
+    settings.wifiProgressSound = false;
+    settings.wifiConnectedSound = false;
+    settings.ledEnabled = false;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    service.onEvent(Event(EventType::WIFI_TRY_CONNECT));
+    service.update(1);
+    service.update(1 + SignalController::CONNECT_PULSE_MS);
+    service.onEvent(Event(EventType::WIFI_CONNECTED));
+    service.update(200);
+    service.update(200 + SignalController::CONNECTED_PULSE_MS);
+    TEST_ASSERT_FALSE(output.buzzer);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
 }
 
 void test_night_brightness_changes_with_calendar_time_and_keeps_global_off_priority() {
@@ -1121,7 +1184,7 @@ void test_night_brightness_changes_with_calendar_time_and_keeps_global_off_prior
     service.setOperatingState(SignalController::OperatingState::IDLE);
     const uint32_t start = UINT32_MAX - 250;
     service.update(start);
-    TEST_ASSERT_EQUAL_UINT8(20, output.brightness);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
     wallTime.valid = true;
     wallTime.hour = 21;
     service.update(start + 1);
@@ -1190,6 +1253,93 @@ void test_night_brightness_applies_to_blink_delivery_and_preview_across_tick_wra
     settings.ledEnabled = false;
     service.update(start + 2503);
     TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+}
+
+void test_led_brightness_preview_overrides_schedule_then_restores_it_without_saving() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    wallTime.valid = true;
+    wallTime.hour = 23;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.setOperatingState(SignalController::OperatingState::IDLE);
+    const uint32_t start = UINT32_MAX - 500;
+    TEST_ASSERT_TRUE(service.startLedPreview(LedMode::STEADY, 47, start));
+    service.update(start);
+    TEST_ASSERT_EQUAL_UINT8(47, output.brightness);
+    output.ledWrites.clear();
+    service.update(start + 1);
+    TEST_ASSERT_EQUAL_UINT(1, output.ledWrites.size());
+    TEST_ASSERT_EQUAL_UINT8(47, output.ledWrites[0]);
+    TEST_ASSERT_FALSE(service.startLedPreview(LedMode::STEADY, 101, start + 1));
+    TEST_ASSERT_FALSE(service.startLedPreview(static_cast<LedMode>(3), 20, start + 1));
+    service.update(start + 2999);
+    TEST_ASSERT_EQUAL_UINT8(47, output.brightness);
+    service.update(start + 3000);
+    TEST_ASSERT_EQUAL_UINT8(10, output.brightness);
+    TEST_ASSERT_EQUAL_UINT32(10, settings.quietLedBrightnessPercent);
+    TEST_ASSERT_EQUAL_UINT32(1, settings.revision);
+    wallTime.hour = 12;
+    TEST_ASSERT_TRUE(service.startLedPreview(LedMode::STEADY, 0, start + 3001));
+    service.update(start + 3001);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    TEST_ASSERT_TRUE(service.startLedPreview(LedMode::STEADY, 100, start + 3002));
+    service.update(start + 3002);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    TEST_ASSERT_TRUE(service.startLedPreview(LedMode::OFF, 100, start + 3003));
+    service.update(start + 3003);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    service.update(start + 6003);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+}
+
+void test_led_brightness_preview_preserves_blink_timing_and_cancels_safely() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    wallTime.valid = true;
+    wallTime.hour = 23;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.setOperatingState(SignalController::OperatingState::IDLE);
+    service.onEvent(Event(EventType::LIGHT_ON));
+    service.update(0);
+    TEST_ASSERT_FALSE(service.startLedPreview(LedMode::STEADY, 50, 1));
+    service.update(SignalController::STARTUP_MS);
+    const uint32_t start = UINT32_MAX - 250;
+    TEST_ASSERT_TRUE(service.startLedPreview(LedMode::BLINK, 25, start));
+    service.update(start);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.update(start + 499);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.update(start + 500);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    output.ledWrites.clear();
+    service.update(start + 501);
+    TEST_ASSERT_EQUAL_UINT(1, output.ledWrites.size());
+    TEST_ASSERT_EQUAL_UINT8(0, output.ledWrites[0]);
+    service.update(start + 1000);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.onEvent(Event(EventType::WIFI_RECONNECT));
+    service.update(start + 1001);
+    TEST_ASSERT_EQUAL_UINT8(10, output.brightness);
+    TEST_ASSERT_TRUE(service.startLedPreview(LedMode::STEADY, 50, start + 1002));
+    service.update(start + 1002);
+    TEST_ASSERT_EQUAL_UINT8(50, output.brightness);
+    settings.ledEnabled = false;
+    service.update(start + 1003);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    TEST_ASSERT_FALSE(service.startLedPreview(LedMode::STEADY, 50, start + 1004));
+    settings.ledEnabled = true;
+    service.update(start + 1005);
+    TEST_ASSERT_EQUAL_UINT8(10, output.brightness);
 }
 
 void test_led_pwm_preserves_safe_startup_and_maps_percent_to_duty() {
@@ -1874,6 +2024,7 @@ void tearDown() {}
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_web_field_accepts_valid_wifi_values_and_rejects_oversize_or_embedded_null);
+    RUN_TEST(test_percentage_input_accepts_bounds_and_rejects_malformed_values_atomically);
     RUN_TEST(test_dispatch_rejects_null_duplicate_and_capacity_then_removes_in_order);
     RUN_TEST(test_dispatch_rejects_mutation_and_nesting_and_borrows_payload_synchronously);
     RUN_TEST(test_connection_invalid_configuration_never_starts_or_retries);
@@ -1908,9 +2059,12 @@ int main() {
     RUN_TEST(test_wifi_transition_cancels_active_sound_preview);
     RUN_TEST(test_quiet_hours_cover_daytime_overnight_and_unknown_time);
     RUN_TEST(test_quiet_hours_stop_active_sound_without_replay_and_block_sound_preview);
-    RUN_TEST(test_quiet_hours_mute_startup_until_clock_is_ready_without_affecting_led);
+    RUN_TEST(test_unknown_time_uses_day_signals_then_applies_night_after_sync);
+    RUN_TEST(test_unknown_time_preserves_disabled_sound_categories_and_global_led_off);
     RUN_TEST(test_night_brightness_changes_with_calendar_time_and_keeps_global_off_priority);
     RUN_TEST(test_night_brightness_applies_to_blink_delivery_and_preview_across_tick_wrap);
+    RUN_TEST(test_led_brightness_preview_overrides_schedule_then_restores_it_without_saving);
+    RUN_TEST(test_led_brightness_preview_preserves_blink_timing_and_cancels_safely);
     RUN_TEST(test_led_pwm_preserves_safe_startup_and_maps_percent_to_duty);
     RUN_TEST(test_device_settings_validate_network_telegram_and_signal_modes);
     RUN_TEST(test_application_services_ota_during_startup_and_missing_ntp_then_delivers);

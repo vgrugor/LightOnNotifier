@@ -558,23 +558,11 @@ void WebPortal::saveSignals() {
         return;
     }
     const String brightnessValue = server.arg("quietLedBrightnessPercent");
-    if (brightnessValue.isEmpty() || brightnessValue.length() > 3) {
+    if (!parsePercentage(brightnessValue.c_str(), brightnessValue.length(),
+                         candidate->quietLedBrightnessPercent)) {
         fail(400, "Нічна яскравість світлодіода має бути від 0 до 100%");
         return;
     }
-    uint32_t brightness = 0;
-    for (size_t i = 0; i < brightnessValue.length(); ++i) {
-        if (brightnessValue[i] < '0' || brightnessValue[i] > '9') {
-            fail(400, "Нічна яскравість світлодіода має бути від 0 до 100%");
-            return;
-        }
-        brightness = brightness * 10 + static_cast<uint32_t>(brightnessValue[i] - '0');
-    }
-    if (brightness > 100) {
-        fail(400, "Нічна яскравість світлодіода має бути від 0 до 100%");
-        return;
-    }
-    candidate->quietLedBrightnessPercent = brightness;
     candidate->ledEnabled = server.arg("ledEnabled") == "1";
     candidate->deliveryBlink = server.arg("deliveryBlink") == "1";
     const char* names[] = {"startupLed", "connectingLed", "waitingLed", "idleLed", "errorLed"};
@@ -774,7 +762,19 @@ void WebPortal::preview() {
         fail(400, "Неправильний режим світлодіода");
         return;
     }
-    if (!signals.startPreview(selected, static_cast<LedMode>(modeValue.toInt()), millis())) {
+    uint32_t brightness = 0;
+    const bool explicitBrightness = kind == "led" && server.hasArg("brightnessPercent");
+    if (explicitBrightness) {
+        const String value = server.arg("brightnessPercent");
+        if (!parsePercentage(value.c_str(), value.length(), brightness)) {
+            fail(400, "Яскравість для перегляду має бути від 0 до 100%");
+            return;
+        }
+    }
+    const LedMode mode = static_cast<LedMode>(modeValue.toInt());
+    const bool started = explicitBrightness ? signals.startLedPreview(mode, brightness, millis())
+                                            : signals.startPreview(selected, mode, millis());
+    if (!started) {
         fail(409,
              "Перегляд недоступний під час запуску, нічної тиші або коли світлодіод вимкнений");
         return;

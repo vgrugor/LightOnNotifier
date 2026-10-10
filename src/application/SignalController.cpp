@@ -11,7 +11,7 @@ bool SignalController::quietNow() const {
     }
     uint8_t hour = 0;
     if (!time.localHour(hour) || hour > 23) {
-        return true;
+        return false;
     }
     const uint8_t start = settings->quietStartHour;
     const uint8_t end = settings->quietEndHour;
@@ -23,6 +23,10 @@ bool SignalController::quietHoursActive() const {
 }
 
 void SignalController::setLed(bool active) {
+    if (previewActive && previewKind == Preview::LED) {
+        // Only the preview writes LED output until it expires or is cancelled.
+        return;
+    }
     output.setLedBrightness(active && (settings == nullptr || settings->ledEnabled) ? ledBrightness
                                                                                     : 0);
 }
@@ -88,7 +92,19 @@ bool SignalController::startPreview(Preview kind, LedMode mode, uint32_t now) {
     previewKind = kind;
     previewLedMode = mode;
     previewStarted = now;
+    previewBrightnessOverride = false;
     previewActive = true;
+    return true;
+}
+
+bool SignalController::startLedPreview(LedMode mode, uint32_t brightnessPercent, uint32_t now) {
+    if (brightnessPercent > 100 ||
+        (mode != LedMode::OFF && mode != LedMode::STEADY && mode != LedMode::BLINK) ||
+        !startPreview(Preview::LED, mode, now)) {
+        return false;
+    }
+    previewBrightness = static_cast<uint8_t>(brightnessPercent);
+    previewBrightnessOverride = true;
     return true;
 }
 
@@ -172,6 +188,13 @@ void SignalController::update(uint32_t now) {
             output.setBuzzer(false);
         }
     }
+    if (previewActive && (uint32_t(now - previewStarted) >= 3000 ||
+                          (previewKind != Preview::LED && button.isPressed()))) {
+        previewActive = false;
+        if (previewKind != Preview::LED) {
+            output.setBuzzer(false);
+        }
+    }
     if (ledBlinkRequested) {
         ledBlinkRequested = false;
         ledBlinkActive = true;
@@ -233,14 +256,12 @@ void SignalController::update(uint32_t now) {
     }
     if (previewActive) {
         const uint32_t elapsed = uint32_t(now - previewStarted);
-        if (elapsed >= 3000 || (previewKind != Preview::LED && button.isPressed())) {
-            previewActive = false;
-            output.setBuzzer(false);
-            return;
-        }
         if (previewKind == Preview::LED) {
-            setLed(previewLedMode == LedMode::STEADY ||
-                   (previewLedMode == LedMode::BLINK && elapsed % 1000 < 500));
+            const bool on = previewLedMode == LedMode::STEADY ||
+                            (previewLedMode == LedMode::BLINK && elapsed % 1000 < 500);
+            const uint8_t brightness =
+                previewBrightnessOverride ? previewBrightness : ledBrightness;
+            output.setLedBrightness(on ? brightness : 0);
         } else {
             bool on = previewKind == Preview::STARTUP;
             if (previewKind == Preview::CONNECTING) {

@@ -104,14 +104,23 @@ Night mode uses the existing daily interval: start hour inclusive, end hour excl
 hours 0–23, including intervals across midnight. Enabled intervals must have different
 start and end hours. It silences all buzzer patterns and sound previews, drops pending
 sounds, and does not replay them when the interval ends. If calendar time is unavailable,
-enabled night mode remains active. `quietLedBrightnessPercent` is a whole percentage
-from 0 to 100, defaulting to 10, and applies to every lit LED phase, delivery indication,
-and LED preview while night mode is active. Daytime brightness is 100%. Off phases and
+signals use daytime behavior: lit LED phases are 100% and enabled sound categories may play.
+When valid time becomes available, the saved schedule applies on the next signal update.
+Loss of valid time returns to daytime behavior without replaying suppressed sounds.
+`quietLedBrightnessPercent` is a whole percentage
+from 0 to 100, defaulting to 10, and applies to automatic lit LED phases and delivery
+indication while night mode is active. Daytime brightness is 100%. LED previews with an
+explicit percentage temporarily override that level for three seconds; they do not persist
+settings and return to the scheduled level after completion or cancellation. Legacy LED
+previews without an explicit percentage use the scheduled level. Off phases and
 the global LED off switch stay off. The active-high external LED uses software PWM
 on its existing pin, with range 0–1023 and the pinned core's default 1 kHz frequency;
 percentages represent PWM duty, not calibrated perceived brightness. PWM is updated
 only when duty changes. Schedule transitions take effect on the next signal update,
 which can be delayed by the documented synchronous Telegram call.
+Preview percentages must be integers 0–100; invalid values leave any existing preview
+unchanged. LED preview is unavailable during startup or with global LED off. Only the
+preview writes LED output while active, preventing intermediate automatic brightness pulses.
 
 ### Connection and calendar time
 

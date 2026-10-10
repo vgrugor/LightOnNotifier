@@ -251,11 +251,22 @@ and `quietEndHour` (integers 0–23), and `quietLedBrightnessPercent` (integer 0
 on save). Invalid or missing brightness returns HTTP 400 before settings change.
 The interval includes its start and excludes its end; 22–7 means 22:00–07:00, using Kyiv
 local time with the pinned seasonal rule. Enabled intervals cannot have identical hours.
-Until time is available, enabled night mode silences the buzzer and uses night LED brightness.
-It also applies to delivery flashes and LED previews; daytime lit phases use 100%.
+Until time is available, the device uses daytime behavior: lit LED phases use 100% brightness
+and enabled buzzer categories may play. Valid time activates the saved night schedule on the
+next signal update; losing valid time restores daytime behavior without replaying old sounds.
+It also applies to delivery flashes; daytime lit phases use 100%.
 Global LED off and off phases remain off. `ledBrightnessPercent` reports the current output
 level, including zero during an off phase. Buzzer signals suppressed at night are not replayed
 afterward. Telegram delivery continues independently of night mode.
+
+The Preview block has a separate LED brightness field (whole percentages 0–100, initially
+100%). Select a mode and press LED to preview that exact percentage for three seconds,
+including during night mode. The saved settings and revision do not change. Completion,
+Wi-Fi transitions, or disabling the LED restore the regular output state. Global LED off
+and the startup window prevent LED preview. The authenticated `POST /api/preview` accepts
+`kind=led`, `mode=0|1|2` (off/steady/blink), and optional `brightnessPercent=0..100`.
+Malformed or out-of-range percentages return HTTP 400 without changing an active preview.
+For older clients that omit `brightnessPercent`, the current scheduled brightness is used.
 
 The active-high LED on D1/GPIO4 now uses software PWM at the core's default 1 kHz, with
 range 0–1023. The percentage sets electrical duty; perceived brightness is not calibrated.

@@ -30,6 +30,7 @@ let testCalls = 0;
 let signalSaves = 0;
 let wifiRequests = 0;
 let previewRequests = 0;
+const previewLevels = [];
 const server = http.createServer(async (request, response) => {
     const path = new URL(request.url, 'http://localhost').pathname;
     if (assets[path]) {
@@ -91,6 +92,9 @@ const server = http.createServer(async (request, response) => {
         response.end();
     } else if (path === '/api/preview') {
         previewRequests += 1;
+        assert.equal(form.get('kind'), 'led');
+        assert.equal(form.get('mode'), '1');
+        previewLevels.push(form.get('brightnessPercent'));
         if (previewRequests === 1) {
             response.writeHead(413, { 'Content-Length': '0' });
             response.end();
@@ -151,11 +155,30 @@ const server = http.createServer(async (request, response) => {
         await page.getByRole('button', { name: 'Звук і світлодіод' }).click();
         assert.equal(await brightness.inputValue(), '17');
         assert.equal(testCalls, 0);
+        const previewBrightness = page.getByLabel('Яскравість світлодіода для перегляду (%)');
+        assert.equal(await previewBrightness.inputValue(), '100');
+        await page.getByLabel('Режим світлодіода для перегляду').selectOption('1');
+        for (const value of ['101', '-1', '1.5', '']) {
+            await previewBrightness.fill(value);
+            await page.getByRole('button', { name: 'Світлодіод', exact: true }).click();
+            assert.equal(previewRequests, 0);
+        }
+        await previewBrightness.fill('37');
         await page.getByRole('button', { name: 'Світлодіод', exact: true }).click();
         await page.getByText('HTTP-заголовки або дані запиту завеликі').waitFor();
         await page.getByRole('button', { name: 'Світлодіод', exact: true }).click();
         await page.getByText('Попередній перегляд запущено').waitFor();
         assert.equal(previewRequests, 2);
+        for (const value of ['0', '100']) {
+            await previewBrightness.fill(value);
+            await Promise.all([
+                page.waitForResponse(response => response.url().endsWith('/api/preview')),
+                page.getByRole('button', { name: 'Світлодіод', exact: true }).click(),
+            ]);
+        }
+        assert.deepEqual(previewLevels, ['37', '37', '0', '100']);
+        assert.equal(signalSaves, 1);
+        assert.equal(settings.quietLedBrightnessPercent, 17);
         assert.equal(await page.locator('body').evaluate(node => node.scrollWidth <= innerWidth), true);
         await page.getByRole('button', { name: 'Стан', exact: true }).click();
         page.once('dialog', dialog => dialog.accept());
