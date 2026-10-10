@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include <Arduino.h>
 #include <EEPROM.h>
 #include <LittleFS.h>
 #include <unity.h>
@@ -14,6 +15,7 @@
 #include "application/SignalController.h"
 #include "application/StaticNetworkConfig.h"
 #include "application/TimeService.h"
+#include "infrastructure/actuators/ExternalLedActuator.h"
 #include "infrastructure/settings/SettingsStore.h"
 #include "infrastructure/telegram/HttpResponse.h"
 #include "infrastructure/telegram/TelegramAcknowledgement.h"
@@ -150,9 +152,11 @@ public:
 class FakeOutput : public SignalOutput {
 public:
     bool led = false;
+    uint8_t brightness = 0;
     bool buzzer = false;
-    void setLed(bool active) override {
-        led = active;
+    void setLedBrightness(uint8_t percent) override {
+        brightness = percent;
+        led = percent != 0;
     }
     void setBuzzer(bool active) override {
         buzzer = active;
@@ -1104,6 +1108,120 @@ void test_quiet_hours_mute_startup_until_clock_is_ready_without_affecting_led() 
     TEST_ASSERT_FALSE(output.buzzer);
 }
 
+void test_night_brightness_changes_with_calendar_time_and_keeps_global_off_priority() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    settings.quietLedBrightnessPercent = 20;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.setOperatingState(SignalController::OperatingState::IDLE);
+    const uint32_t start = UINT32_MAX - 250;
+    service.update(start);
+    TEST_ASSERT_EQUAL_UINT8(20, output.brightness);
+    wallTime.valid = true;
+    wallTime.hour = 21;
+    service.update(start + 1);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    wallTime.hour = 22;
+    service.update(start + 2);
+    TEST_ASSERT_EQUAL_UINT8(20, output.brightness);
+    wallTime.hour = 0;
+    service.update(start + 500);
+    TEST_ASSERT_EQUAL_UINT8(20, output.brightness);
+    wallTime.hour = 7;
+    service.update(start + 501);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    wallTime.hour = 23;
+    settings.quietLedBrightnessPercent = 0;
+    service.update(start + 502);
+    TEST_ASSERT_FALSE(output.led);
+    settings.quietLedBrightnessPercent = 100;
+    service.update(start + 503);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    settings.quietHoursEnabled = false;
+    settings.quietLedBrightnessPercent = 20;
+    service.update(start + 504);
+    TEST_ASSERT_EQUAL_UINT8(100, output.brightness);
+    settings.ledEnabled = false;
+    service.update(start + 505);
+    TEST_ASSERT_FALSE(output.led);
+}
+
+void test_night_brightness_applies_to_blink_delivery_and_preview_across_tick_wrap() {
+    FakeOutput output;
+    FakeButton button;
+    FakeTime wallTime;
+    wallTime.valid = true;
+    wallTime.hour = 23;
+    DeviceSettings settings;
+    settings.quietHoursEnabled = true;
+    settings.quietLedBrightnessPercent = 25;
+    settings.idleLed = LedMode::BLINK;
+    SignalController service(output, button, wallTime);
+    service.setSettings(settings);
+    service.begin();
+    service.setOperatingState(SignalController::OperatingState::IDLE);
+    const uint32_t start = UINT32_MAX - 250;
+    service.update(start);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.update(start + 499);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.update(start + 500);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    service.update(start + 1000);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.onEvent(Event(EventType::MESSAGE_SEND));
+    service.update(start + 1001);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    service.update(start + 2000);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    service.update(start + 2001);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    service.update(start + 2501);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+    TEST_ASSERT_TRUE(
+        service.startPreview(SignalController::Preview::LED, LedMode::STEADY, start + 2502));
+    service.update(start + 2502);
+    TEST_ASSERT_EQUAL_UINT8(25, output.brightness);
+    settings.ledEnabled = false;
+    service.update(start + 2503);
+    TEST_ASSERT_EQUAL_UINT8(0, output.brightness);
+}
+
+void test_led_pwm_preserves_safe_startup_and_maps_percent_to_duty() {
+    FakeGpio::calls.clear();
+    ExternalLedActuator led(4);
+    led.begin();
+    TEST_ASSERT_EQUAL_UINT(3, FakeGpio::calls.size());
+    TEST_ASSERT_TRUE(FakeGpio::calls[0].kind == FakeGpio::Kind::DIGITAL);
+    TEST_ASSERT_EQUAL_INT(4, FakeGpio::calls[0].pin);
+    TEST_ASSERT_EQUAL_UINT(LOW, FakeGpio::calls[0].value);
+    TEST_ASSERT_TRUE(FakeGpio::calls[1].kind == FakeGpio::Kind::MODE);
+    TEST_ASSERT_TRUE(FakeGpio::calls[2].kind == FakeGpio::Kind::RANGE);
+    TEST_ASSERT_EQUAL_UINT(1023, FakeGpio::calls[2].value);
+    led.setBrightness(0);
+    TEST_ASSERT_EQUAL_UINT(3, FakeGpio::calls.size());
+    led.setBrightness(25);
+    TEST_ASSERT_TRUE(FakeGpio::calls.back().kind == FakeGpio::Kind::PWM);
+    TEST_ASSERT_EQUAL_INT(4, FakeGpio::calls.back().pin);
+    TEST_ASSERT_EQUAL_UINT(256, FakeGpio::calls.back().value);
+    const size_t count = FakeGpio::calls.size();
+    led.setBrightness(25);
+    TEST_ASSERT_EQUAL_UINT(count, FakeGpio::calls.size());
+    led.setBrightness(0);
+    TEST_ASSERT_EQUAL_UINT(0, FakeGpio::calls.back().value);
+    led.setBrightness(100);
+    TEST_ASSERT_EQUAL_UINT(1023, FakeGpio::calls.back().value);
+    led.setBrightness(255);
+    TEST_ASSERT_EQUAL_UINT(count + 2, FakeGpio::calls.size());
+    led.setState(false);
+    TEST_ASSERT_EQUAL_UINT(0, FakeGpio::calls.back().value);
+}
+
 void test_device_settings_validate_network_telegram_and_signal_modes() {
     DeviceSettings settings;
     strcpy(settings.ssid, "network");
@@ -1117,6 +1235,13 @@ void test_device_settings_validate_network_telegram_and_signal_modes() {
     TEST_ASSERT_TRUE(validNetworkSettings(settings));
     TEST_ASSERT_TRUE(validTelegramSettings(settings));
     TEST_ASSERT_TRUE(validSignalSettings(settings));
+    settings.quietLedBrightnessPercent = 0;
+    TEST_ASSERT_TRUE(validSignalSettings(settings));
+    settings.quietLedBrightnessPercent = 100;
+    TEST_ASSERT_TRUE(validSignalSettings(settings));
+    settings.quietLedBrightnessPercent = 101;
+    TEST_ASSERT_FALSE(validSignalSettings(settings));
+    settings.quietLedBrightnessPercent = 10;
     settings.startupSoundSeconds = 0;
     TEST_ASSERT_FALSE(validSignalSettings(settings));
     settings.startupSoundSeconds = 60;
@@ -1555,6 +1680,7 @@ void test_settings_store_preserves_previous_record_after_interrupted_replacement
     TEST_ASSERT_TRUE(firstBoot.wasProvisioned());
     DeviceSettings replacement = original;
     replacement.revision = 2;
+    replacement.quietLedBrightnessPercent = 35;
     strcpy(replacement.message, "Revised");
     LittleFS.failRename = true;
     TEST_ASSERT_FALSE(firstBoot.save(replacement));
@@ -1564,12 +1690,14 @@ void test_settings_store_preserves_previous_record_after_interrupted_replacement
     DeviceSettings loaded = {};
     TEST_ASSERT_TRUE(reboot.load(loaded));
     TEST_ASSERT_EQUAL_STRING("Light on", loaded.message);
+    TEST_ASSERT_EQUAL_UINT32(10, loaded.quietLedBrightnessPercent);
     TEST_ASSERT_TRUE(reboot.wasProvisioned());
     TEST_ASSERT_TRUE(reboot.save(replacement));
     SettingsStore nextBoot;
     TEST_ASSERT_TRUE(nextBoot.begin());
     TEST_ASSERT_TRUE(nextBoot.load(loaded));
     TEST_ASSERT_EQUAL_STRING("Revised", loaded.message);
+    TEST_ASSERT_EQUAL_UINT32(35, loaded.quietLedBrightnessPercent);
 }
 
 void test_settings_store_rejects_future_schema_until_explicit_reset() {
@@ -1631,6 +1759,7 @@ void test_settings_store_migrates_version_one_without_losing_saved_configuration
     TEST_ASSERT_TRUE(store.load(loaded));
     TEST_ASSERT_EQUAL_UINT32(DeviceSettings::SCHEMA, loaded.schema);
     TEST_ASSERT_EQUAL_UINT32(10, loaded.startupSoundSeconds);
+    TEST_ASSERT_EQUAL_UINT32(10, loaded.quietLedBrightnessPercent);
     TEST_ASSERT_FALSE(loaded.quietHoursEnabled);
     TEST_ASSERT_EQUAL_UINT8(22, loaded.quietStartHour);
     TEST_ASSERT_EQUAL_UINT8(7, loaded.quietEndHour);
@@ -1671,6 +1800,7 @@ void test_settings_store_migrates_version_two_with_quiet_hours_disabled() {
     TEST_ASSERT_TRUE(store.load(loaded));
     TEST_ASSERT_EQUAL_UINT32(DeviceSettings::SCHEMA, loaded.schema);
     TEST_ASSERT_EQUAL_UINT32(25, loaded.startupSoundSeconds);
+    TEST_ASSERT_EQUAL_UINT32(10, loaded.quietLedBrightnessPercent);
     TEST_ASSERT_FALSE(loaded.quietHoursEnabled);
     TEST_ASSERT_EQUAL_UINT8(22, loaded.quietStartHour);
     TEST_ASSERT_EQUAL_UINT8(7, loaded.quietEndHour);
@@ -1686,6 +1816,54 @@ void test_settings_store_migrates_version_two_with_quiet_hours_disabled() {
     TEST_ASSERT_TRUE(reloaded.quietHoursEnabled);
     TEST_ASSERT_EQUAL_UINT8(22, reloaded.quietStartHour);
     TEST_ASSERT_EQUAL_UINT8(7, reloaded.quietEndHour);
+}
+
+void test_settings_store_migrates_version_three_and_persists_night_brightness() {
+    resetFakeStorage();
+    DeviceSettings oldSettings = validStoredSettings();
+    oldSettings.schema = 3;
+    oldSettings.startupSoundSeconds = 25;
+    oldSettings.quietHoursEnabled = true;
+    oldSettings.quietStartHour = 23;
+    oldSettings.quietEndHour = 6;
+    oldSettings.adminConfigured = true;
+    memset(oldSettings.adminHash, 55, sizeof(oldSettings.adminHash));
+    constexpr size_t oldSize = 1140;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(&oldSettings);
+    uint32_t checksum = 2166136261UL;
+    for (size_t i = 0; i < oldSize; ++i) {
+        checksum = (checksum ^ bytes[i]) * 16777619UL;
+    }
+    const uint32_t header[] = {0x4c4f4e31, oldSize, checksum};
+    auto& file = LittleFS.files["/settings-a.bin"];
+    file.resize(sizeof(header) + oldSize);
+    memcpy(file.data(), header, sizeof(header));
+    memcpy(file.data() + sizeof(header), bytes, oldSize);
+    const auto originalRecord = file;
+    SettingsStore store;
+    TEST_ASSERT_TRUE(store.begin());
+    DeviceSettings loaded;
+    TEST_ASSERT_TRUE(store.load(loaded));
+    TEST_ASSERT_EQUAL_UINT32(DeviceSettings::SCHEMA, loaded.schema);
+    TEST_ASSERT_EQUAL_UINT32(10, loaded.quietLedBrightnessPercent);
+    TEST_ASSERT_TRUE(loaded.quietHoursEnabled);
+    TEST_ASSERT_EQUAL_UINT8(23, loaded.quietStartHour);
+    TEST_ASSERT_EQUAL_UINT8(6, loaded.quietEndHour);
+    TEST_ASSERT_EQUAL_UINT32(25, loaded.startupSoundSeconds);
+    TEST_ASSERT_EQUAL_STRING(oldSettings.ssid, loaded.ssid);
+    TEST_ASSERT_EQUAL_STRING(oldSettings.botToken, loaded.botToken);
+    TEST_ASSERT_EQUAL_MEMORY(oldSettings.adminHash, loaded.adminHash, sizeof(loaded.adminHash));
+    TEST_ASSERT_TRUE(file == originalRecord);
+    loaded.revision = 2;
+    loaded.quietLedBrightnessPercent = 33;
+    TEST_ASSERT_TRUE(store.save(loaded));
+    SettingsStore reboot;
+    TEST_ASSERT_TRUE(reboot.begin());
+    DeviceSettings reloaded;
+    TEST_ASSERT_TRUE(reboot.load(reloaded));
+    TEST_ASSERT_EQUAL_UINT32(33, reloaded.quietLedBrightnessPercent);
+    TEST_ASSERT_TRUE(reloaded.quietHoursEnabled);
+    TEST_ASSERT_EQUAL_UINT8(23, reloaded.quietStartHour);
 }
 
 } // namespace
@@ -1731,6 +1909,9 @@ int main() {
     RUN_TEST(test_quiet_hours_cover_daytime_overnight_and_unknown_time);
     RUN_TEST(test_quiet_hours_stop_active_sound_without_replay_and_block_sound_preview);
     RUN_TEST(test_quiet_hours_mute_startup_until_clock_is_ready_without_affecting_led);
+    RUN_TEST(test_night_brightness_changes_with_calendar_time_and_keeps_global_off_priority);
+    RUN_TEST(test_night_brightness_applies_to_blink_delivery_and_preview_across_tick_wrap);
+    RUN_TEST(test_led_pwm_preserves_safe_startup_and_maps_percent_to_duty);
     RUN_TEST(test_device_settings_validate_network_telegram_and_signal_modes);
     RUN_TEST(test_application_services_ota_during_startup_and_missing_ntp_then_delivers);
     RUN_TEST(test_application_missing_wifi_still_finishes_signals_and_retries_without_sending);
@@ -1752,5 +1933,6 @@ int main() {
     RUN_TEST(test_settings_store_requires_durable_provisioning_marker_before_first_record);
     RUN_TEST(test_settings_store_migrates_version_one_without_losing_saved_configuration);
     RUN_TEST(test_settings_store_migrates_version_two_with_quiet_hours_disabled);
+    RUN_TEST(test_settings_store_migrates_version_three_and_persists_night_brightness);
     return UNITY_END();
 }

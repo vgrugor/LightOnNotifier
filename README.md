@@ -102,8 +102,11 @@ local `env.cpp` from its firmware sources.
 On first boot after upgrading, valid build-time Wi-Fi and Telegram values initialize the
 saved configuration once. Later web edits use LittleFS. A small EEPROM marker records that
 the device was provisioned so a damaged filesystem does not reimport compiled credentials.
-Existing version-one records are read with a default ten-second startup sound; the next
-settings save writes the new record format while retaining the other values.
+Version-one through version-three records migrate in memory to version four; the next
+settings save writes the new format while retaining other values. Version one receives a
+ten-second startup sound, versions one and two receive disabled night mode with hours 22–7,
+and all migrated records receive 10% night LED brightness. Version-three night schedules
+are preserved.
 A deliberate web reset clears the saved configuration and does not reimport build-time credentials.
 If no usable configuration
 exists, the device opens a protected setup access point named `LightOn-XXXXXX` with address
@@ -144,8 +147,8 @@ pnpm test:e2e
 
 `nodemcuv2_ci` builds without production credentials. `nodemcuv2` uses the ignored
 local configuration. Native tests compile actual application modules, event dispatch,
-HTTP response framing, Telegram acknowledgment parsing, and settings storage with fake
-LittleFS/EEPROM adapters. They use no network or
+HTTP response framing, Telegram acknowledgment parsing, settings storage, and LED PWM with
+fake LittleFS/EEPROM/GPIO adapters. They use no network or
 physical board and cover input validation, timing boundaries, and counter wraparound.
 To apply the pinned formatter, run `python scripts/check_format.py --fix`; it excludes
 the local credential file. On a Mac with Chrome already installed, set `PW_CHANNEL=chrome`
@@ -200,7 +203,8 @@ Errors return JSON with an `error` string, usually with HTTP 400, 401, 403, 409,
 500. Neither status nor settings responses return saved passwords or bot tokens.
 
 `/api/status` reports `wifi`, `ip`, `uptimeMs`, `firmware`, `timeReady`, `delivery`,
-`ledActive`, `buzzerActive`, `wifiPending`, `recovery`, `storageReady`, `unsupportedSchema`,
+`ledActive`, `ledBrightnessPercent`, `buzzerActive`, `quietHoursEnabled`, `quietHoursActive`,
+`wifiPending`, `recovery`, `storageReady`, `unsupportedSchema`,
 `configured`, numbered
 `recipients` with `outcome` and `attempts`, and per-recipient test results. Delivery is one of
 `empty`, `invalid`, `waiting`, `partial`, `delivered`, or `exhausted`. A test send is an explicit
@@ -238,6 +242,25 @@ or each state can be off, steady, or blink with 500 ms on/500 ms off phases. Suc
 requests 1000 ms off, then 500 ms on, before returning to the selected state. A button press
 cancels the active and pending buzzer patterns and leaves the buzzer inactive; future
 events can request another pattern. It does not cancel Telegram delivery.
+
+Night mode is configured in the Sound and LED section. It silences the buzzer and sets the
+LED's lit phases to the chosen night brightness (whole percentages, 0–100; default 10%).
+0% turns the LED off and 100% keeps full brightness. `POST /api/signals` and
+`GET /api/settings` use `quietHoursEnabled` (Boolean; POST uses `0`/`1`), `quietStartHour`
+and `quietEndHour` (integers 0–23), and `quietLedBrightnessPercent` (integer 0–100, required
+on save). Invalid or missing brightness returns HTTP 400 before settings change.
+The interval includes its start and excludes its end; 22–7 means 22:00–07:00, using Kyiv
+local time with the pinned seasonal rule. Enabled intervals cannot have identical hours.
+Until time is available, enabled night mode silences the buzzer and uses night LED brightness.
+It also applies to delivery flashes and LED previews; daytime lit phases use 100%.
+Global LED off and off phases remain off. `ledBrightnessPercent` reports the current output
+level, including zero during an off phase. Buzzer signals suppressed at night are not replayed
+afterward. Telegram delivery continues independently of night mode.
+
+The active-high LED on D1/GPIO4 now uses software PWM at the core's default 1 kHz, with
+range 0–1023. The percentage sets electrical duty; perceived brightness is not calibrated.
+Pin assignment, resistor requirements, and output polarity are unchanged. Actual brightness
+and PWM behavior on the connected LED require hardware verification after firmware upload.
 
 ## Deployment
 

@@ -50,8 +50,8 @@ must never depend on live Wi-Fi, Telegram, a physical board, real waits, or test
 Cover interval boundaries and `uint32_t` wraparound when changing timed behavior.
 The native source filter compiles `application/*.cpp`, `presentation/EventNotifier.cpp`,
 `infrastructure/telegram/HttpResponse.cpp`, `infrastructure/telegram/TelegramAcknowledgement.cpp`,
-`infrastructure/telegram/TelegramConnection.cpp`, and `infrastructure/settings/SettingsStore.cpp`
-with fake LittleFS/EEPROM headers.
+`infrastructure/telegram/TelegramConnection.cpp`, `infrastructure/settings/SettingsStore.cpp`,
+and `infrastructure/actuators/ExternalLedActuator.cpp` with fake LittleFS/EEPROM/GPIO headers.
 HTTP framing and filtered acknowledgment parsing are actual production code, tested with
 the firmware's pinned ArduinoJson 7.4.2 revision and Unity 2.6.1.
 
@@ -100,6 +100,19 @@ Partial or pending delivery is not idle. Short button presses cancel sound; a fi
 hold after boot opens protected recovery access for ten minutes. D3 held at reset still selects
 the hardware bootloader.
 
+Night mode uses the existing daily interval: start hour inclusive, end hour exclusive,
+hours 0–23, including intervals across midnight. Enabled intervals must have different
+start and end hours. It silences all buzzer patterns and sound previews, drops pending
+sounds, and does not replay them when the interval ends. If calendar time is unavailable,
+enabled night mode remains active. `quietLedBrightnessPercent` is a whole percentage
+from 0 to 100, defaulting to 10, and applies to every lit LED phase, delivery indication,
+and LED preview while night mode is active. Daytime brightness is 100%. Off phases and
+the global LED off switch stay off. The active-high external LED uses software PWM
+on its existing pin, with range 0–1023 and the pinned core's default 1 kHz frequency;
+percentages represent PWM duty, not calibrated perceived brightness. PWM is updated
+only when duty changes. Schedule transitions take effect on the next signal update,
+which can be delayed by the documented synchronous Telegram call.
+
 ### Connection and calendar time
 
 Application code owns Wi-Fi attempts: allow 15 seconds per attempt, wait five seconds
@@ -118,7 +131,8 @@ through a post-boot long button hold, but not merely because station Wi-Fi is un
 Calendar time is separate from monotonic interval timing. Start NTP without a wait loop and
 retry acquisition every 60 seconds while unavailable. TLS time is considered valid at Unix
 time 1704067200 or later (2024-01-01 UTC). Delivery waits when time is invalid and resumes
-after recovery. The network time adapter uses UTC with `pool.ntp.org` and `time.nist.gov`.
+after recovery. NTP uses `pool.ntp.org` and `time.nist.gov`; the Unix clock remains UTC,
+while daily schedules use Kyiv local time via the pinned core's `TZ_Europe_Kiev` rule.
 Calendar corrections must not change retry/signal intervals.
 
 Start OTA once on the first connected pass, before notification delivery. Service it on
@@ -161,8 +175,10 @@ message/recipient data and the transport token for an in-progress event remain o
 web edits take effect for a later boot or an explicit test. Reset stores an unconfigured
 tombstone and must not reimport compiled credentials. Test messages have one attempt per
 selected recipient and no automatic retry; they do not affect startup delivery state.
-Version-one settings records migrate to version two in memory with the default ten-second
-startup sound and are rewritten only when settings are saved.
+Version-one through version-three settings records migrate to version four in memory and
+are rewritten only when settings are saved. Version one gets the default ten-second startup
+sound; versions one and two get night mode disabled with hours 22–7. All migrated records
+get 10% night LED brightness, preserving version-three night schedules and other settings.
 
 Acknowledgment requires valid, complete HTTP 200 framing and a JSON Boolean `ok: true`.
 Content-Length completion ends collection without waiting for disconnect; close-delimited

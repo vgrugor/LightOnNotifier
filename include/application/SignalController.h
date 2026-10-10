@@ -36,6 +36,7 @@ private:
     enum class Pattern { NONE, STARTUP, CONNECTING, CONNECTED };
     void request(Pattern pattern);
     void stop();
+    void setLed(bool active);
     bool quietNow() const;
     SignalOutput& output;
     ButtonPort& button;
@@ -48,6 +49,7 @@ private:
     bool ledBlinkRequested = false;
     bool ledBlinkActive = false;
     bool ledBase = false;
+    uint8_t ledBrightness = 100;
     const DeviceSettings* settings = nullptr;
     OperatingState operatingState = OperatingState::CONNECTING;
     bool startupWindow = false;

@@ -22,6 +22,7 @@ const settings = {
     startupSound: true, startupSoundSeconds: 10,
     wifiProgressSound: true, wifiConnectedSound: true,
     quietHoursEnabled: false, quietStartHour: 22, quietEndHour: 7,
+    quietLedBrightnessPercent: 10,
     ledEnabled: true, deliveryBlink: true, startupLed: 1, connectingLed: 1,
     waitingLed: 0, idleLed: 1, errorLed: 1,
 };
@@ -71,11 +72,13 @@ const server = http.createServer(async (request, response) => {
         assert.equal(form.get('quietHoursEnabled'), '1');
         assert.equal(form.get('quietStartHour'), '23');
         assert.equal(form.get('quietEndHour'), '6');
+        assert.equal(form.get('quietLedBrightnessPercent'), '17');
         settings.startupSound = false;
         settings.startupSoundSeconds = 3;
         settings.quietHoursEnabled = true;
         settings.quietStartHour = 23;
         settings.quietEndHour = 6;
+        settings.quietLedBrightnessPercent = 17;
         settings.revision += 1;
         send(200, { saved: true });
     } else if (path === '/api/test') {
@@ -119,16 +122,34 @@ const server = http.createServer(async (request, response) => {
             ['Вимкнено', 'Світиться постійно', 'Блимає']);
         await page.getByLabel('Звук при появі світла').uncheck();
         await page.getByLabel('Тривалість звуку при появі світла (секунди)').fill('3');
-        await page.getByLabel('Нічний режим: вимикати всі звуки зумера').check();
+        await page.getByLabel('Нічний режим: тиша зумера та нічна яскравість LED').check();
         await page.getByLabel('Початок тиші (година, 0–23)').fill('23');
         await page.getByLabel('Кінець тиші (година, 0–23)').fill('6');
+        const brightness = page.getByLabel('Нічна яскравість світлодіода (%)');
+        assert.equal(await brightness.inputValue(), '10');
+        await brightness.fill('101');
+        await page.getByRole('button', { name: 'Зберегти' }).click();
+        assert.equal(signalSaves, 0);
+        assert.equal(await brightness.evaluate(node => node.checkValidity()), false);
+        await brightness.fill('-1');
+        assert.equal(await brightness.evaluate(node => node.checkValidity()), false);
+        await brightness.fill('0');
+        assert.equal(await brightness.evaluate(node => node.checkValidity()), true);
+        await brightness.fill('100');
+        assert.equal(await brightness.evaluate(node => node.checkValidity()), true);
+        await brightness.fill('17');
         await page.getByRole('button', { name: 'Зберегти' }).click();
         await page.getByText('Збережено', { exact: true }).waitFor();
         assert.equal(signalSaves, 1);
         assert.equal(await page.getByLabel('Тривалість звуку при появі світла (секунди)').inputValue(), '3');
-        assert.equal(await page.getByLabel('Нічний режим: вимикати всі звуки зумера').isChecked(), true);
+        assert.equal(await page.getByLabel('Нічний режим: тиша зумера та нічна яскравість LED').isChecked(), true);
         assert.equal(await page.getByLabel('Початок тиші (година, 0–23)').inputValue(), '23');
         assert.equal(await page.getByLabel('Кінець тиші (година, 0–23)').inputValue(), '6');
+        assert.equal(await brightness.inputValue(), '17');
+        await page.reload();
+        await page.getByRole('heading', { name: 'Стан пристрою' }).waitFor();
+        await page.getByRole('button', { name: 'Звук і світлодіод' }).click();
+        assert.equal(await brightness.inputValue(), '17');
         assert.equal(testCalls, 0);
         await page.getByRole('button', { name: 'Світлодіод', exact: true }).click();
         await page.getByText('HTTP-заголовки або дані запиту завеликі').waitFor();

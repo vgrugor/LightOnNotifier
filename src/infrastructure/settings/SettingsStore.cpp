@@ -16,12 +16,15 @@ constexpr uint32_t LEGACY_SCHEMA = 1;
 constexpr size_t LEGACY_SETTINGS_SIZE = 1132;
 constexpr uint32_t PREVIOUS_SCHEMA = 2;
 constexpr size_t PREVIOUS_SETTINGS_SIZE = offsetof(DeviceSettings, quietHoursEnabled);
+constexpr uint32_t QUIET_HOURS_SCHEMA = 3;
+constexpr size_t QUIET_HOURS_SETTINGS_SIZE = offsetof(DeviceSettings, quietLedBrightnessPercent);
 const char* const SLOT_PATHS[2] = {"/settings-a.bin", "/settings-b.bin"};
 constexpr char TEMP_PATH[] = "/settings.tmp";
 
 static_assert(offsetof(DeviceSettings, startupSoundSeconds) == LEGACY_SETTINGS_SIZE,
               "The version-one settings layout changed");
 static_assert(PREVIOUS_SETTINGS_SIZE == 1136, "The version-two settings layout changed");
+static_assert(QUIET_HOURS_SETTINGS_SIZE == 1140, "The version-three settings layout changed");
 
 struct Record {
     uint32_t magic;
@@ -50,7 +53,7 @@ bool readSlot(int slot, Record& record) {
         file.read(reinterpret_cast<uint8_t*>(&record), HEADER_SIZE) != HEADER_SIZE ||
         record.magic != MAGIC ||
         (record.length != sizeof(DeviceSettings) && record.length != LEGACY_SETTINGS_SIZE &&
-         record.length != PREVIOUS_SETTINGS_SIZE) ||
+         record.length != PREVIOUS_SETTINGS_SIZE && record.length != QUIET_HOURS_SETTINGS_SIZE) ||
         file.size() != HEADER_SIZE + record.length ||
         static_cast<size_t>(file.read(reinterpret_cast<uint8_t*>(&record.data), record.length)) !=
             record.length ||
@@ -69,6 +72,10 @@ bool readSlot(int slot, Record& record) {
         record.data.quietHoursEnabled = false;
         record.data.quietStartHour = 22;
         record.data.quietEndHour = 7;
+    } else if (record.length == QUIET_HOURS_SETTINGS_SIZE &&
+               record.data.schema == QUIET_HOURS_SCHEMA) {
+        record.data.schema = DeviceSettings::SCHEMA;
+        record.data.quietLedBrightnessPercent = 10;
     } else if (record.length != sizeof(DeviceSettings) ||
                record.data.schema != DeviceSettings::SCHEMA) {
         return false;

@@ -35,7 +35,7 @@ public:
 class SignalOutput {
 public:
     virtual ~SignalOutput() = default;
-    virtual void setLed(bool active) = 0;
+    virtual void setLedBrightness(uint8_t percent) = 0;
     virtual void setBuzzer(bool active) = 0;
 };
 

@@ -416,6 +416,7 @@ void WebPortal::status() {
             ? "partial"
             : outcomeName(notifications.outcome());
     doc["ledActive"] = outputs.isLedActive();
+    doc["ledBrightnessPercent"] = outputs.ledBrightnessPercent();
     doc["buzzerActive"] = outputs.isBuzzerActive();
     doc["quietHoursEnabled"] = settings.quietHoursEnabled;
     doc["quietHoursActive"] = signals.quietHoursActive();
@@ -466,6 +467,7 @@ void WebPortal::getSettings() {
     doc["quietHoursEnabled"] = settings.quietHoursEnabled;
     doc["quietStartHour"] = settings.quietStartHour;
     doc["quietEndHour"] = settings.quietEndHour;
+    doc["quietLedBrightnessPercent"] = settings.quietLedBrightnessPercent;
     doc["ledEnabled"] = settings.ledEnabled;
     doc["deliveryBlink"] = settings.deliveryBlink;
     doc["startupLed"] = static_cast<uint8_t>(settings.startupLed);
@@ -555,6 +557,24 @@ void WebPortal::saveSignals() {
         fail(400, "Вкажіть різні години початку й кінця нічного режиму (0–23)");
         return;
     }
+    const String brightnessValue = server.arg("quietLedBrightnessPercent");
+    if (brightnessValue.isEmpty() || brightnessValue.length() > 3) {
+        fail(400, "Нічна яскравість світлодіода має бути від 0 до 100%");
+        return;
+    }
+    uint32_t brightness = 0;
+    for (size_t i = 0; i < brightnessValue.length(); ++i) {
+        if (brightnessValue[i] < '0' || brightnessValue[i] > '9') {
+            fail(400, "Нічна яскравість світлодіода має бути від 0 до 100%");
+            return;
+        }
+        brightness = brightness * 10 + static_cast<uint32_t>(brightnessValue[i] - '0');
+    }
+    if (brightness > 100) {
+        fail(400, "Нічна яскравість світлодіода має бути від 0 до 100%");
+        return;
+    }
+    candidate->quietLedBrightnessPercent = brightness;
     candidate->ledEnabled = server.arg("ledEnabled") == "1";
     candidate->deliveryBlink = server.arg("deliveryBlink") == "1";
     const char* names[] = {"startupLed", "connectingLed", "waitingLed", "idleLed", "errorLed"};

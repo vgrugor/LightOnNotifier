@@ -1,7 +1,7 @@
 #include "application/SignalController.h"
 
 void SignalController::begin() {
-    output.setLed(false);
+    output.setLedBrightness(0);
     output.setBuzzer(false);
 }
 
@@ -20,6 +20,11 @@ bool SignalController::quietNow() const {
 
 bool SignalController::quietHoursActive() const {
     return quietNow();
+}
+
+void SignalController::setLed(bool active) {
+    output.setLedBrightness(active && (settings == nullptr || settings->ledEnabled) ? ledBrightness
+                                                                                    : 0);
 }
 
 void SignalController::request(Pattern pattern) {
@@ -95,7 +100,9 @@ void SignalController::stop() {
 }
 
 void SignalController::update(uint32_t now) {
-    if (quietNow()) {
+    const bool quiet = quietNow();
+    ledBrightness = quiet ? static_cast<uint8_t>(settings->quietLedBrightnessPercent) : 100;
+    if (quiet) {
         if (previewActive && previewKind != Preview::LED) {
             previewActive = false;
         }
@@ -175,12 +182,12 @@ void SignalController::update(uint32_t now) {
         if (elapsed >= 3 * LED_PHASE_MS) {
             ledBlinkActive = false;
         } else {
-            output.setLed(elapsed >= 2 * LED_PHASE_MS);
+            setLed(elapsed >= 2 * LED_PHASE_MS);
         }
     }
     if (settings == nullptr) {
         if (!ledBlinkActive) {
-            output.setLed(ledBase);
+            setLed(ledBase);
         }
         return;
     }
@@ -189,7 +196,10 @@ void SignalController::update(uint32_t now) {
     }
     if (!settings->ledEnabled) {
         ledBlinkActive = false;
-        output.setLed(false);
+        if (previewActive && previewKind == Preview::LED) {
+            previewActive = false;
+        }
+        setLed(false);
     } else {
         if (ledBlinkActive && !previewActive) {
             return;
@@ -218,8 +228,8 @@ void SignalController::update(uint32_t now) {
             stateStarted = now;
         }
         const uint32_t phaseStart = startupWindow ? startupLedStarted : stateStarted;
-        output.setLed(mode == LedMode::STEADY ||
-                      (mode == LedMode::BLINK && uint32_t(now - phaseStart) % 1000 < 500));
+        setLed(mode == LedMode::STEADY ||
+               (mode == LedMode::BLINK && uint32_t(now - phaseStart) % 1000 < 500));
     }
     if (previewActive) {
         const uint32_t elapsed = uint32_t(now - previewStarted);
@@ -229,8 +239,8 @@ void SignalController::update(uint32_t now) {
             return;
         }
         if (previewKind == Preview::LED) {
-            output.setLed(previewLedMode == LedMode::STEADY ||
-                          (previewLedMode == LedMode::BLINK && elapsed % 1000 < 500));
+            setLed(previewLedMode == LedMode::STEADY ||
+                   (previewLedMode == LedMode::BLINK && elapsed % 1000 < 500));
         } else {
             bool on = previewKind == Preview::STARTUP;
             if (previewKind == Preview::CONNECTING) {
